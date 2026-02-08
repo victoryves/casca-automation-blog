@@ -26,19 +26,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   try {
-    // Parse Resend webhook payload
+    // Parse webhook payload (from Cloudflare Email Worker)
     const payload = req.body;
 
-    if (payload.type !== 'email.received') {
-      return res.status(200).json({ message: 'Event type not handled' });
-    }
+    const from = payload.from;
+    const subject = payload.subject;
+    const body = payload.body || '';
+    const hasApprovalKeyword = payload.hasApprovalKeyword;
 
-    const email = payload.data;
-    const from = email.from;
-    const subject = email.subject;
-    const body = email.text || email.html || '';
-
-    console.log('Received email:', { from, subject });
+    console.log('Received webhook:', { from, subject, hasApprovalKeyword });
 
     // Verify sender is approval email
     const approvalEmail = process.env.APPROVAL_EMAIL;
@@ -47,18 +43,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return res.status(200).json({ message: 'Email not from approval address' });
     }
 
-    // Initialize database
-    initDatabase();
-
-    // Check for approval keyword
-    const emailModule = new EmailModule(process.env.RESEND_API_KEY!);
-    const isApproval = emailModule.parseApprovalReply(body);
-
-    if (!isApproval) {
-      console.log('Email does not contain approval keyword');
-      closeDatabase();
+    // Check if approval keyword was already detected by Worker
+    if (!hasApprovalKeyword) {
+      console.log('No approval keyword detected');
       return res.status(200).json({ message: 'No approval keyword found' });
     }
+
+    // Initialize database
+    initDatabase();
 
     console.log('✓ Approval detected!');
 
