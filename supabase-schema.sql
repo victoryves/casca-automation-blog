@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS sources (
   artist_id INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
   url TEXT NOT NULL,
   institution TEXT,
-  credibility_score INTEGER DEFAULT 5,
+  credibility_score NUMERIC(3,1) DEFAULT 5.0,
   content_summary TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );

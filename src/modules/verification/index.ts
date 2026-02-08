@@ -31,12 +31,12 @@ export class VerificationModule {
    * Verify a discovered artist
    */
   async verify(artistId: number): Promise<VerificationResult> {
-    const artist = artistOps.findById(artistId);
+    const artist = await artistOps.findById(artistId);
     if (!artist) {
       throw new Error(`Artist not found: ${artistId}`);
     }
 
-    const sources = sourceOps.findByArtistId(artistId);
+    const sources = await sourceOps.findByArtistId(artistId);
     const reasons: string[] = [];
     let verified = true;
 
@@ -97,7 +97,7 @@ export class VerificationModule {
 
     // Update artist status
     if (verified) {
-      artistOps.updateStatus(artistId, 'verified');
+      await artistOps.updateStatus(artistId, 'verified');
       console.log(`  ✅ VERIFIED`);
     } else {
       console.log(`  ❌ REJECTED: ${reasons.join('; ')}`);
@@ -105,7 +105,7 @@ export class VerificationModule {
 
     return {
       verified,
-      artist: artistOps.findById(artistId)!, // Re-fetch with updated status
+      artist: await artistOps.findById(artistId)!, // Re-fetch with updated status
       sources,
       reasons,
     };
@@ -115,7 +115,7 @@ export class VerificationModule {
    * Verify all discovered artists
    */
   async verifyAll(): Promise<VerificationResult[]> {
-    const discovered = artistOps.findByStatus('discovered');
+    const discovered = await artistOps.findByStatus('discovered');
     console.log(`\n📋 Verifying ${discovered.length} discovered artists...`);
 
     const results: VerificationResult[] = [];
