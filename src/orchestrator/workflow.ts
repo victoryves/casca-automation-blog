@@ -73,8 +73,9 @@ export class WorkflowOrchestrator {
         this.logger.info('No verified artists - starting discovery');
         state.status = 'discovering';
 
-        // Discover up to 3 candidates (efficient search, stops early)
-        const discoveryResult = await discovery.discover(3);
+        // Discover candidates - search until we find at least one verified artist
+        // Using maxCandidates=5 to ensure we have good chances of finding at least 1 verified
+        const discoveryResult = await discovery.discover(5);
         this.logger.info(`Discovery complete: ${discoveryResult.candidates.length} candidates`, {
           errors: discoveryResult.errors,
         });
@@ -126,6 +127,14 @@ export class WorkflowOrchestrator {
         3
       );
       this.logger.info(`Sourced ${images.length} images`);
+
+      // Validate that we have at least one image
+      if (images.length === 0) {
+        this.logger.error('No images found - cannot send email without images');
+        state.status = 'error';
+        state.errors.push('No images found for article');
+        return state;
+      }
 
       // Step 9: Send approval email
       if (options.dryRun) {
