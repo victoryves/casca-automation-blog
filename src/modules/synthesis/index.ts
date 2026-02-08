@@ -33,12 +33,12 @@ export class SynthesisModule {
     console.log(`\n✍️  Synthesizing article for artist ${artistId}...`);
 
     // Get artist and sources
-    const artist = artistOps.findById(artistId);
+    const artist = await artistOps.findById(artistId);
     if (!artist || artist.status !== 'verified') {
       throw new Error(`Artist ${artistId} not found or not verified`);
     }
 
-    const sources = sourceOps.findByArtistId(artistId);
+    const sources = await sourceOps.findByArtistId(artistId);
     if (sources.length === 0) {
       throw new Error(`No sources found for artist ${artistId}`);
     }
@@ -51,7 +51,7 @@ export class SynthesisModule {
     console.log(`  ✓ Article generated (${article.content.split(/\s+/).length} words)`);
 
     // Create draft
-    const draftId = draftOps.create(
+    const draftId = await draftOps.create(
       {
         artist_id: artistId,
         title: article.title,
@@ -64,7 +64,7 @@ export class SynthesisModule {
 
     console.log(`  ✓ Draft created: ${draftId}`);
 
-    const draft = draftOps.findById(draftId);
+    const draft = await draftOps.findById(draftId);
     if (!draft) {
       throw new Error('Failed to create draft');
     }
