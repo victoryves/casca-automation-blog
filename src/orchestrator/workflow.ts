@@ -68,33 +68,57 @@ export class WorkflowOrchestrator {
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists`);
 
-      // Step 3: If no verified artists, run discovery
+      // Step 3: If no verified artists, run discovery loop until we find one
       if (verifiedArtists.length === 0 && !options.skipDiscovery) {
-        this.logger.info('No verified artists - starting discovery');
+        this.logger.info('No verified artists - starting discovery loop');
         state.status = 'discovering';
 
-        // Discover candidates - search until we find at least one verified artist
-        // Using maxCandidates=5 to ensure we have good chances of finding at least 1 verified
-        const discoveryResult = await discovery.discover(5);
-        this.logger.info(`Discovery complete: ${discoveryResult.candidates.length} candidates`, {
-          errors: discoveryResult.errors,
-        });
+        const maxAttempts = 10; // Maximum discovery rounds to prevent infinite loop
+        let attempt = 0;
 
-        if (discoveryResult.errors.length > 0) {
-          state.errors.push(...discoveryResult.errors);
+        // Keep discovering until we find at least one verified artist
+        while (verifiedArtists.length === 0 && attempt < maxAttempts) {
+          attempt++;
+          this.logger.info(`Discovery attempt ${attempt}/${maxAttempts}`);
+
+          // Discover 5 candidates per attempt
+          const discoveryResult = await discovery.discover(5);
+          this.logger.info(`Discovery round ${attempt}: ${discoveryResult.candidates.length} candidates found`, {
+            errors: discoveryResult.errors,
+          });
+
+          if (discoveryResult.errors.length > 0) {
+            state.errors.push(...discoveryResult.errors);
+          }
+
+          // Step 4: Verify discovered candidates
+          if (discoveryResult.candidates.length > 0) {
+            this.logger.info('Starting verification');
+            state.status = 'verifying';
+
+            const verificationResults = await verification.verifyAll();
+            const verified = verificationResults.filter((r) => r.verified).length;
+            this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
+
+            // Re-fetch verified artists
+            verifiedArtists = await artistOps.findVerifiedUnpublished();
+
+            // If we found at least one verified artist, stop discovery loop
+            if (verifiedArtists.length > 0) {
+              this.logger.info(`✓ Found ${verifiedArtists.length} verified artist(s) after ${attempt} attempt(s)`);
+              break;
+            }
+          }
+
+          // If no candidates found and no verified artists yet, continue searching
+          if (verifiedArtists.length === 0 && attempt < maxAttempts) {
+            this.logger.info(`No verified artists yet, continuing discovery (attempt ${attempt + 1}/${maxAttempts})...`);
+          }
         }
 
-        // Step 4: Verify discovered candidates
-        if (discoveryResult.candidates.length > 0) {
-          this.logger.info('Starting verification');
-          state.status = 'verifying';
-
-          const verificationResults = await verification.verifyAll();
-          const verified = verificationResults.filter((r) => r.verified).length;
-          this.logger.info(`Verification complete: ${verified} verified`);
-
-          // Re-fetch verified artists
-          verifiedArtists = await artistOps.findVerifiedUnpublished();
+        // Log if we hit max attempts
+        if (attempt >= maxAttempts && verifiedArtists.length === 0) {
+          this.logger.warn(`Reached maximum discovery attempts (${maxAttempts}) without finding verified artist`);
         }
       }
 
