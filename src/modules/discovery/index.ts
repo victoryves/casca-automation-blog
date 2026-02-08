@@ -37,6 +37,7 @@ export class DiscoveryModule {
     console.log('🔍 Starting artist discovery...');
     if (maxCandidates) {
       console.log(`  (stopping after finding ${maxCandidates} candidate${maxCandidates > 1 ? 's' : ''})`);
+    }
 
     // Execute searches from config
     for (const searchQuery of config.searchQueries.queries) {
