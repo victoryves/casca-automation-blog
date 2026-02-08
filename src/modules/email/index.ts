@@ -284,11 +284,12 @@ export class EmailModule {
       <p style="font-size: 1.2em; margin: 20px 0;"><strong>Option 1: Quick Approval via OpenClaw</strong></p>
       <p>Send this command to your OpenClaw Agent:</p>
       <div class="approval-code" style="background-color: #1a1a1a; color: #00ff00; padding: 15px 20px; font-family: 'Monaco', 'Courier New', monospace; font-size: 1.15em; cursor: pointer; user-select: all;">
-cd /Users/vicyves1/Documents/personal/Vibe\\ Coding/casca-automation-blog && npm run publish
+cd ~/casca-automation-blog && npm run publish
       </div>
       <p style="font-size: 0.95em; color: #666; margin-top: 10px;">
         Copy the command above and paste it in OpenClaw chat.<br>
-        The article will be published to Hashnode immediately.
+        <strong>Context for OpenClaw:</strong> This publishes the CASCA blog article to Hashnode.<br>
+        The article will be published immediately.
       </p>
       <p style="font-size: 1.2em; margin: 30px 0 10px 0;"><strong>Option 2: Manual Approval</strong></p>
       <p style="font-size: 0.95em; color: #666;">
