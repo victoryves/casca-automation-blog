@@ -11,15 +11,5 @@
       "src": "/api/webhook/email",
       "dest": "/api/webhook/email.ts"
     }
-  ],
-  "env": {
-    "DATABASE_PATH": "./data/casca.db",
-    "ANTHROPIC_API_KEY": "@anthropic-api-key",
-    "RESEND_API_KEY": "@resend-api-key",
-    "TAVILY_API_KEY": "@tavily-api-key",
-    "APPROVAL_EMAIL": "@approval-email",
-    "FROM_EMAIL": "@from-email",
-    "MEDIUM_AUTHOR_NAME": "@medium-author-name",
-    "WEBHOOK_SECRET": "@webhook-secret"
-  }
+  ]
 }
