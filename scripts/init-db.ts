@@ -3,43 +3,21 @@
 /**
  * Initialize Database
  *
- * Creates the database and tables if they don't exist.
+ * For Supabase: Tables are created via SQL in Supabase Dashboard
  */
 
-import { initDatabase, closeDatabase } from '../src/db/client.js';
-import { loadConfig } from '../src/config/index.js';
-
-function initDb(): void {
-  console.log('🗄️  Initializing Database\n');
-
-  try {
-    const config = loadConfig();
-
-    console.log(`Database path: ${config.env.databasePath}`);
-
-    const db = initDatabase({
-      path: config.env.databasePath,
-      verbose: true,
-    });
-
-    console.log('\n✅ Database initialized successfully!');
-
-    // Show tables
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-      .all() as Array<{ name: string }>;
-
-    console.log(`\n📋 Tables created: ${tables.length}`);
-    tables.forEach((table) => {
-      console.log(`  - ${table.name}`);
-    });
-
-    closeDatabase();
-  } catch (error) {
-    console.error('\n❌ Database initialization failed:');
-    console.error(error);
-    process.exit(1);
-  }
-}
-
-initDb();
+console.log('🗄️  Database Initialization\n');
+console.log('ℹ️  This project uses Supabase (PostgreSQL)');
+console.log('');
+console.log('To initialize the database:');
+console.log('1. Open Supabase Dashboard: https://app.supabase.com');
+console.log('2. Go to SQL Editor');
+console.log('3. Run the SQL from: supabase-schema.sql');
+console.log('');
+console.log('The schema file creates all required tables:');
+console.log('  - artists');
+console.log('  - sources');
+console.log('  - drafts');
+console.log('  - publishing_log');
+console.log('');
+console.log('✅ No local initialization needed!');

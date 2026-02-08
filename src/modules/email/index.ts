@@ -383,8 +383,8 @@ export class EmailModule {
   /**
    * Check if email already sent today
    */
-  emailSentToday(): boolean {
-    return draftOps.emailSentToday();
+  async emailSentToday(): Promise<boolean> {
+    return await draftOps.emailSentToday();
   }
 
   /**

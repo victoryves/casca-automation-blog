@@ -6,7 +6,7 @@
  * Adds Cícero Dias (famous artist from Pernambuco) to test the full workflow.
  */
 
-import { initDatabase, closeDatabase } from '../src/db/client.js';
+import { initDatabase, closeDatabase } from '../src/db/supabase.js';
 import { artistOps, sourceOps } from '../src/db/operations/index.js';
 import { loadConfig } from '../src/config/index.js';
 

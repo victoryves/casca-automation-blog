@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 
-import { initDatabase, closeDatabase } from '../src/db/client.js';
+import { initDatabase, closeDatabase } from '../src/db/supabase.js';
 import { draftOps, artistOps, sourceOps } from '../src/db/operations/index.js';
 import { loadConfig } from '../src/config/index.js';
 import { marked } from 'marked';

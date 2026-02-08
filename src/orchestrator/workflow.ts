@@ -4,7 +4,7 @@
  * Main workflow coordinator for daily execution.
  */
 
-import { initDatabase, closeDatabase } from '../db/client.js';
+import { initDatabase, closeDatabase } from '../db/supabase.js';
 import { artistOps, draftOps } from '../db/operations/index.js';
 import { getConfig } from '../config/index.js';
 import { DiscoveryModule } from '../modules/discovery/index.js';
@@ -47,10 +47,7 @@ export class WorkflowOrchestrator {
 
     try {
       // Initialize database
-      initDatabase({
-        path: this.config.env.databasePath,
-        verbose: this.config.env.logLevel === 'debug',
-      });
+      initDatabase();
 
       // Initialize modules
       const discovery = new DiscoveryModule(this.config.env.tavilyApiKey);
@@ -60,7 +57,7 @@ export class WorkflowOrchestrator {
       const email = new EmailModule(this.config.env.resendApiKey);
 
       // Step 1: Check if email already sent today
-      if (!options.forceRun && email.emailSentToday()) {
+      if (!options.forceRun && await email.emailSentToday()) {
         this.logger.info('✓ Email already sent today - skipping workflow');
         state.email_sent = true;
         state.status = 'completed';
@@ -68,7 +65,7 @@ export class WorkflowOrchestrator {
       }
 
       // Step 2: Check for verified unpublished artists
-      let verifiedArtists = artistOps.findVerifiedUnpublished();
+      let verifiedArtists = await artistOps.findVerifiedUnpublished();
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists`);
 
       // Step 3: If no verified artists, run discovery
@@ -95,7 +92,7 @@ export class WorkflowOrchestrator {
           this.logger.info(`Verification complete: ${verified} verified`);
 
           // Re-fetch verified artists
-          verifiedArtists = artistOps.findVerifiedUnpublished();
+          verifiedArtists = await artistOps.findVerifiedUnpublished();
         }
       }
 
@@ -168,12 +165,10 @@ export class WorkflowOrchestrator {
     this.logger.info(`Processing approval for draft ${draftId}`);
 
     try {
-      initDatabase({
-        path: this.config.env.databasePath,
-      });
+      initDatabase();
 
       // Update draft status
-      draftOps.updateStatus(draftId, 'approved');
+      await draftOps.updateStatus(draftId, 'approved');
       this.logger.info('Draft marked as approved');
 
       // Check if Hashnode credentials are configured

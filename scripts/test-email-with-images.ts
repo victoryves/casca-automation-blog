@@ -4,7 +4,7 @@
  * Test Email with Images
  */
 
-import { initDatabase, closeDatabase } from '../src/db/client.js';
+import { initDatabase, closeDatabase } from '../src/db/supabase.js';
 import { loadConfig } from '../src/config/index.js';
 import { EmailModule } from '../src/modules/email/index.js';
 import { VisualModule } from '../src/modules/visual/index.js';
