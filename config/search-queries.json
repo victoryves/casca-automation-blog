@@ -1,0 +1,24 @@
+{
+  "queries": [
+    {
+      "query": "visual artist painter Northeast Brazil Pernambuco Bahia museum collection",
+      "description": "General visual artists from Pernambuco and Bahia"
+    },
+    {
+      "query": "artista visual pintor Nordeste Brasil nascido Recife Salvador university",
+      "description": "Artists born in major Northeast cities (Portuguese)"
+    },
+    {
+      "query": "Brazilian sculptor printmaker Northeast Ceará Alagoas contemporary art",
+      "description": "Sculptors and printmakers from Ceará and Alagoas"
+    },
+    {
+      "query": "Northeast Brazil artist exhibition gallery Sergipe Paraíba modern art",
+      "description": "Artists with exhibitions from Sergipe and Paraíba"
+    },
+    {
+      "query": "artista brasileiro Nordeste pintura desenho gravura patrimônio cultural",
+      "description": "Artists associated with cultural heritage (Portuguese)"
+    }
+  ]
+}

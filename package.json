@@ -1,0 +1,54 @@
+{
+  "name": "casca-automation-blog",
+  "version": "1.0.0",
+  "description": "Editorial discovery and publishing assistant for CASCA Archive",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "daily": "tsx scripts/run-daily.ts",
+    "init-db": "tsx scripts/init-db.ts",
+    "test-config": "tsx scripts/test-config.ts",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "editorial",
+    "automation",
+    "medium",
+    "claude",
+    "brazilian-art"
+  ],
+  "author": "CASCA Archive",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "axios": "^1.7.9",
+    "better-sqlite3": "^11.8.1",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.7",
+    "html-to-text": "^9.0.5",
+    "marked": "^15.0.4",
+    "resend": "^4.0.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/html-to-text": "^9.0.4",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.19.1",
+    "@typescript-eslint/parser": "^8.19.1",
+    "@vercel/node": "^5.5.33",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

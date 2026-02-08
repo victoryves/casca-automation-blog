@@ -1,0 +1,112 @@
+{
+  "institutions": [
+    {
+      "domain": "masp.org.br",
+      "name": "Museu de Arte de São Paulo (MASP)",
+      "credibility_score": 1.0,
+      "country": "Brazil"
+    },
+    {
+      "domain": "pinacoteca.org.br",
+      "name": "Pinacoteca de São Paulo",
+      "credibility_score": 1.0,
+      "country": "Brazil"
+    },
+    {
+      "domain": "mam.org.br",
+      "name": "Museu de Arte Moderna",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufpe.br",
+      "name": "Universidade Federal de Pernambuco",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufba.br",
+      "name": "Universidade Federal da Bahia",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufc.br",
+      "name": "Universidade Federal do Ceará",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "iphan.gov.br",
+      "name": "Instituto do Patrimônio Histórico e Artístico Nacional",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "fundaj.gov.br",
+      "name": "Fundação Joaquim Nabuco",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "institutoricardobrennand.org.br",
+      "name": "Instituto Ricardo Brennand",
+      "credibility_score": 0.85,
+      "country": "Brazil"
+    },
+    {
+      "domain": "wikipedia.org",
+      "name": "Wikipedia",
+      "credibility_score": 0.7,
+      "country": "International"
+    },
+    {
+      "domain": "wikidata.org",
+      "name": "Wikidata",
+      "credibility_score": 0.7,
+      "country": "International"
+    },
+    {
+      "domain": "itaucultural.org.br",
+      "name": "Itaú Cultural",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufal.edu.br",
+      "name": "Universidade Federal de Alagoas",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufpb.br",
+      "name": "Universidade Federal da Paraíba",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufpi.br",
+      "name": "Universidade Federal do Piauí",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufrn.br",
+      "name": "Universidade Federal do Rio Grande do Norte",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufs.br",
+      "name": "Universidade Federal de Sergipe",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ufma.br",
+      "name": "Universidade Federal do Maranhão",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    }
+  ]
+}
