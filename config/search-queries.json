@@ -19,6 +19,30 @@
     {
       "query": "artista brasileiro Nordeste pintura desenho gravura patrimônio cultural",
       "description": "Artists associated with cultural heritage (Portuguese)"
+    },
+    {
+      "query": "xilogravura cordel Northeast Brazil popular art artist Recife",
+      "description": "Folk art and woodcut artists"
+    },
+    {
+      "query": "ceramista escultor Nordeste Brasil arte popular Caruaru pottery",
+      "description": "Ceramicists and folk sculptors"
+    },
+    {
+      "query": "artista naif primitivo Nordeste Brasil pintor autodidata",
+      "description": "Naive and primitive artists (Portuguese)"
+    },
+    {
+      "query": "Brazilian contemporary artist Bahia Pernambuco gallery exhibition",
+      "description": "Contemporary artists with exhibitions"
+    },
+    {
+      "query": "fotógrafo artista visual Nordeste Fortaleza Natal arte contemporânea",
+      "description": "Photographers and visual artists"
+    },
+    {
+      "query": "muralista grafiteiro street art Nordeste Brasil urban art",
+      "description": "Muralists and street artists"
     }
   ]
 }

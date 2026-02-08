@@ -107,6 +107,96 @@
       "name": "Universidade Federal do Maranhão",
       "credibility_score": 0.9,
       "country": "Brazil"
+    },
+    {
+      "domain": "mamam.art.br",
+      "name": "Museu de Arte Moderna Aloísio Magalhães",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "ccbnb.org.br",
+      "name": "Centro Cultural Banco do Nordeste",
+      "credibility_score": 0.85,
+      "country": "Brazil"
+    },
+    {
+      "domain": "enciclopedia.itaucultural.org.br",
+      "name": "Enciclopédia Itaú Cultural",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "bienal.org.br",
+      "name": "Bienal de São Paulo",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "mnba.gov.br",
+      "name": "Museu Nacional de Bellas Artes",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museus.gov.br",
+      "name": "Instituto Brasileiro de Museus",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "artebrasileiros.com.br",
+      "name": "Arte Brasileiros",
+      "credibility_score": 0.75,
+      "country": "Brazil"
+    },
+    {
+      "domain": "select.art.br",
+      "name": "Select Art",
+      "credibility_score": 0.7,
+      "country": "Brazil"
+    },
+    {
+      "domain": "revistazsul.com.br",
+      "name": "Revista ZUM",
+      "credibility_score": 0.75,
+      "country": "Brazil"
+    },
+    {
+      "domain": "casadecultura.org.br",
+      "name": "Casa de Cultura Digital",
+      "credibility_score": 0.7,
+      "country": "Brazil"
+    },
+    {
+      "domain": "artsy.net",
+      "name": "Artsy",
+      "credibility_score": 0.8,
+      "country": "International"
+    },
+    {
+      "domain": "getty.edu",
+      "name": "Getty Research Institute",
+      "credibility_score": 0.95,
+      "country": "International"
+    },
+    {
+      "domain": "moma.org",
+      "name": "Museum of Modern Art (MoMA)",
+      "credibility_score": 1.0,
+      "country": "International"
+    },
+    {
+      "domain": "tate.org.uk",
+      "name": "Tate",
+      "credibility_score": 0.95,
+      "country": "International"
+    },
+    {
+      "domain": "metmuseum.org",
+      "name": "Metropolitan Museum of Art",
+      "credibility_score": 1.0,
+      "country": "International"
     }
   ]
 }

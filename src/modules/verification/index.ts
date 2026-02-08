@@ -11,7 +11,8 @@ import { artistOps, sourceOps } from '../../db/operations/index.js';
 import type { VerificationResult, Artist, Source } from '../../types/index.js';
 
 export class VerificationModule {
-  private readonly MIN_SOURCES = 2;
+  private readonly MIN_SOURCES = 1; // Reduced from 2 to 1 for more flexibility
+  private readonly MIN_SOURCES_HIGH_CREDIBILITY = 1; // Only 1 source needed if credibility >= 0.9
   private readonly MIN_CREDIBILITY = 0.5;
 
   // Northeast Brazil states
@@ -42,27 +43,24 @@ export class VerificationModule {
 
     console.log(`\n🔍 Verifying: ${artist.full_name}`);
 
-    // Check 1: Minimum number of sources
-    if (sources.length < this.MIN_SOURCES) {
-      verified = false;
-      reasons.push(`Insufficient sources (${sources.length}/${this.MIN_SOURCES})`);
-      console.log(`  ✗ Insufficient sources: ${sources.length}/${this.MIN_SOURCES}`);
-    } else {
-      console.log(`  ✓ Sources: ${sources.length}/${this.MIN_SOURCES}`);
-    }
-
-    // Check 2: Source credibility
+    // Check 1: Minimum number of sources (flexible based on credibility)
+    const highCredibilitySources = sources.filter((s) => s.credibility_score >= 0.9);
     const credibleSources = sources.filter((s) => s.credibility_score >= this.MIN_CREDIBILITY);
-    if (credibleSources.length < this.MIN_SOURCES) {
+
+    // Accept if: 1+ high credibility source OR 2+ credible sources
+    const hasEnoughSources =
+      highCredibilitySources.length >= this.MIN_SOURCES_HIGH_CREDIBILITY ||
+      credibleSources.length >= 2;
+
+    if (!hasEnoughSources) {
       verified = false;
       reasons.push(
-        `Insufficient credible sources (${credibleSources.length}/${this.MIN_SOURCES})`
+        `Insufficient sources (${sources.length} total, ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`
       );
-      console.log(
-        `  ✗ Credible sources: ${credibleSources.length}/${this.MIN_SOURCES}`
-      );
+      console.log(`  ✗ Insufficient sources: need 1 high-credibility (0.9+) OR 2+ credible (0.5+)`);
+      console.log(`    Got: ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible`);
     } else {
-      console.log(`  ✓ Credible sources: ${credibleSources.length}`);
+      console.log(`  ✓ Sources: ${sources.length} (${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`);
     }
 
     // Check 3: Northeast Brazil origin
