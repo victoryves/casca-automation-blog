@@ -73,7 +73,8 @@ export class WorkflowOrchestrator {
         this.logger.info('No verified artists - starting discovery');
         state.status = 'discovering';
 
-        const discoveryResult = await discovery.discover();
+        // Discover up to 3 candidates (efficient search, stops early)
+        const discoveryResult = await discovery.discover(3);
         this.logger.info(`Discovery complete: ${discoveryResult.candidates.length} candidates`, {
           errors: discoveryResult.errors,
         });

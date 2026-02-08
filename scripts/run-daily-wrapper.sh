@@ -12,6 +12,10 @@ PROJECT_DIR="/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blo
 # Change to project directory
 cd "$PROJECT_DIR"
 
+# Update code from Git (ensures latest version)
+echo "Updating code from GitHub..." >> "$LOG_FILE"
+git pull origin main >> "$LOG_FILE" 2>&1
+
 # Load environment variables
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export NODE_ENV=production

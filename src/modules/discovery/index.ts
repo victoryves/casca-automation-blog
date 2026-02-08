@@ -26,14 +26,17 @@ export class DiscoveryModule {
 
   /**
    * Discover new artist candidates
+   * @param maxCandidates - Maximum number of candidates to find (default: unlimited)
    */
-  async discover(): Promise<DiscoveryResult> {
+  async discover(maxCandidates?: number): Promise<DiscoveryResult> {
     const config = getConfig();
     const candidates: Artist[] = [];
     const sourcesMap = new Map<number, Source[]>();
     const errors: string[] = [];
 
     console.log('🔍 Starting artist discovery...');
+    if (maxCandidates) {
+      console.log(`  (stopping after finding ${maxCandidates} candidate${maxCandidates > 1 ? 's' : ''})`);
 
     // Execute searches from config
     for (const searchQuery of config.searchQueries.queries) {
@@ -62,7 +65,7 @@ export class DiscoveryModule {
         // Process each candidate
         for (const { artist, sources } of extracted) {
           // Check for duplicates
-          const existing = artistOps.findByNameAndCity(
+          const existing = await artistOps.findByNameAndCity(
             artist.full_name,
             artist.birthplace_city
           );
@@ -73,8 +76,8 @@ export class DiscoveryModule {
           }
 
           // Create artist
-          const artistId = artistOps.create(artist);
-          const createdArtist = artistOps.findById(artistId);
+          const artistId = await artistOps.create(artist);
+          const createdArtist = await artistOps.findById(artistId);
 
           if (!createdArtist) {
             errors.push(`Failed to create artist: ${artist.full_name}`);
@@ -89,7 +92,7 @@ export class DiscoveryModule {
             const credibility = getInstitutionCredibility(source.url, config.institutions);
             const institutionName = getInstitutionName(source.url, config.institutions);
 
-            const sourceId = sourceOps.create({
+            const sourceId = await sourceOps.create({
               artist_id: artistId,
               url: source.url,
               institution: institutionName ?? source.institution,
@@ -97,7 +100,7 @@ export class DiscoveryModule {
               content_summary: source.content_summary,
             });
 
-            const createdSource = sourceOps.findById(sourceId);
+            const createdSource = await sourceOps.findById(sourceId);
             if (createdSource) {
               artistSources.push(createdSource);
             }
@@ -105,6 +108,16 @@ export class DiscoveryModule {
 
           sourcesMap.set(artistId, artistSources);
           console.log(`  ✓ Added: ${artist.full_name} (${artistSources.length} sources)`);
+
+          // Check if we've reached the maximum number of candidates
+          if (maxCandidates && candidates.length >= maxCandidates) {
+            console.log(`  ✓ Reached target of ${maxCandidates} candidate(s), stopping search`);
+            return {
+              candidates,
+              sources: sourcesMap,
+              errors,
+            };
+          }
         }
 
         // Rate limiting
