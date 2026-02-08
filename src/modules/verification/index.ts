@@ -28,6 +28,31 @@ export class VerificationModule {
     'Sergipe',
   ];
 
+  // Terms that indicate this is NOT a person (exhibitions, institutions, etc.)
+  private readonly EXCLUDED_TERMS = [
+    'panorama',
+    'bienal',
+    'biennial',
+    'exhibition',
+    'exposição',
+    'mostra',
+    'museum',
+    'museu',
+    'gallery',
+    'galeria',
+    'instituto',
+    'institute',
+    'foundation',
+    'fundação',
+    'centro cultural',
+    'cultural center',
+    'list of',
+    'lista de',
+    'under the lens',
+    'collection',
+    'coleção',
+  ];
+
   /**
    * Verify a discovered artist
    */
@@ -42,6 +67,16 @@ export class VerificationModule {
     let verified = true;
 
     console.log(`\n🔍 Verifying: ${artist.full_name}`);
+
+    // Check 0: Is this actually a person? (not an event/exhibition/institution)
+    const isActualPerson = this.isActualPerson(artist.full_name);
+    if (!isActualPerson) {
+      verified = false;
+      reasons.push('Name appears to be an event, exhibition, or institution (not a person)');
+      console.log(`  ✗ Not a person (event/exhibition/institution)`);
+    } else {
+      console.log(`  ✓ Appears to be a person`);
+    }
 
     // Check 1: Minimum number of sources (flexible based on credibility)
     const highCredibilitySources = sources.filter((s) => s.credibility_score >= 0.9);
@@ -107,6 +142,36 @@ export class VerificationModule {
       sources,
       reasons,
     };
+  }
+
+  /**
+   * Check if the name appears to be an actual person (not an event/exhibition/institution)
+   */
+  private isActualPerson(name: string): boolean {
+    const nameLower = name.toLowerCase();
+
+    // Check for excluded terms
+    for (const term of this.EXCLUDED_TERMS) {
+      if (nameLower.includes(term)) {
+        return false;
+      }
+    }
+
+    // Additional heuristics:
+    // - Should not end with common institutional suffixes
+    if (nameLower.endsWith(' art') ||
+        nameLower.endsWith(' arte') ||
+        nameLower.endsWith(' artists') ||
+        nameLower.endsWith(' artistas')) {
+      return false;
+    }
+
+    // - Should not start with numbers (like "36th")
+    if (/^\d+/.test(name)) {
+      return false;
+    }
+
+    return true;
   }
 
   /**
