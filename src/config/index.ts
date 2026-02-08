@@ -25,7 +25,8 @@ dotenv.config();
 
 export interface EnvConfig {
   // Database
-  databasePath: string;
+  supabaseUrl: string;
+  supabaseKey: string;
 
   // APIs
   anthropicApiKey: string;
@@ -55,7 +56,8 @@ export interface EnvConfig {
 
 function loadEnvConfig(): EnvConfig {
   const required = [
-    'DATABASE_PATH',
+    'SUPABASE_URL',
+    'SUPABASE_KEY',
     'ANTHROPIC_API_KEY',
     'RESEND_API_KEY',
     'TAVILY_API_KEY',
@@ -71,7 +73,8 @@ function loadEnvConfig(): EnvConfig {
   }
 
   return {
-    databasePath: process.env.DATABASE_PATH!,
+    supabaseUrl: process.env.SUPABASE_URL!,
+    supabaseKey: process.env.SUPABASE_KEY!,
     anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
     resendApiKey: process.env.RESEND_API_KEY!,
     tavilyApiKey: process.env.TAVILY_API_KEY!,

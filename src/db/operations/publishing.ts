@@ -1,90 +1,182 @@
 /**
- * Publishing Log Database Operations
+ * Publishing Log Database Operations - Supabase
  */
 
-import { query } from '../client.js';
+import { getSupabase } from '../supabase.js';
 import type { PublishingLog } from '../../types/index.js';
 
 export const publishingOps = {
   /**
    * Create a new publishing log entry
    */
-  create(log: Omit<PublishingLog, 'id'>): number {
-    const result = query.run(
-      `INSERT INTO publishing_log (draft_id, medium_url, error_message)
-       VALUES (?, ?, ?)`,
-      [log.draft_id, log.medium_url ?? null, log.error_message ?? null]
-    );
-    return result.lastInsertRowid as number;
+  async create(log: Omit<PublishingLog, 'id'>): Promise<number> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .insert({
+        draft_id: log.draft_id,
+        medium_url: log.medium_url ?? null,
+        error_message: log.error_message ?? null,
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create publishing log: ${error.message}`);
+    }
+
+    return data.id;
   },
 
   /**
    * Find log entry by ID
    */
-  findById(id: number): PublishingLog | undefined {
-    return query.get<PublishingLog>('SELECT * FROM publishing_log WHERE id = ?', [id]);
+  async findById(id: number): Promise<PublishingLog | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return null;
+      }
+      throw new Error(`Failed to find publishing log: ${error.message}`);
+    }
+
+    return data as PublishingLog;
   },
 
   /**
    * Find all log entries for a draft
    */
-  findByDraftId(draftId: number): PublishingLog[] {
-    return query.all<PublishingLog>(
-      'SELECT * FROM publishing_log WHERE draft_id = ? ORDER BY published_at DESC',
-      [draftId]
-    );
+  async findByDraftId(draftId: number): Promise<PublishingLog[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .select('*')
+      .eq('draft_id', draftId)
+      .order('published_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find publishing logs for draft: ${error.message}`);
+    }
+
+    return data as PublishingLog[];
   },
 
   /**
    * Find latest log entry for a draft
    */
-  findLatestByDraftId(draftId: number): PublishingLog | undefined {
-    return query.get<PublishingLog>(
-      'SELECT * FROM publishing_log WHERE draft_id = ? ORDER BY published_at DESC LIMIT 1',
-      [draftId]
-    );
+  async findLatestByDraftId(draftId: number): Promise<PublishingLog | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .select('*')
+      .eq('draft_id', draftId)
+      .order('published_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to find latest publishing log: ${error.message}`);
+    }
+
+    return data as PublishingLog | null;
   },
 
   /**
    * Check if draft was published successfully
    */
-  isPublished(draftId: number): boolean {
-    const result = query.get<{ count: number }>(
-      'SELECT COUNT(*) as count FROM publishing_log WHERE draft_id = ? AND medium_url IS NOT NULL',
-      [draftId]
-    );
-    return (result?.count ?? 0) > 0;
+  async isPublished(draftId: number): Promise<boolean> {
+    const supabase = getSupabase();
+
+    const { count, error } = await supabase
+      .from('publishing_log')
+      .select('*', { count: 'exact', head: true })
+      .eq('draft_id', draftId)
+      .not('medium_url', 'is', null);
+
+    if (error) {
+      throw new Error(`Failed to check if published: ${error.message}`);
+    }
+
+    return (count ?? 0) > 0;
   },
 
   /**
    * Get all failed publishing attempts
    */
-  findFailed(): PublishingLog[] {
-    return query.all<PublishingLog>(
-      'SELECT * FROM publishing_log WHERE error_message IS NOT NULL ORDER BY published_at DESC'
-    );
+  async findFailed(): Promise<PublishingLog[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .select('*')
+      .not('error_message', 'is', null)
+      .order('published_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find failed publishing attempts: ${error.message}`);
+    }
+
+    return data as PublishingLog[];
   },
 
   /**
    * Get all successful publishing attempts
    */
-  findSuccessful(): PublishingLog[] {
-    return query.all<PublishingLog>(
-      'SELECT * FROM publishing_log WHERE medium_url IS NOT NULL ORDER BY published_at DESC'
-    );
+  async findSuccessful(): Promise<PublishingLog[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('publishing_log')
+      .select('*')
+      .not('medium_url', 'is', null)
+      .order('published_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find successful publishing attempts: ${error.message}`);
+    }
+
+    return data as PublishingLog[];
   },
 
   /**
    * Update Medium URL after publication
    */
-  updateMediumUrl(id: number, mediumUrl: string): void {
-    query.run('UPDATE publishing_log SET medium_url = ? WHERE id = ?', [mediumUrl, id]);
+  async updateMediumUrl(id: number, mediumUrl: string): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('publishing_log')
+      .update({ medium_url: mediumUrl })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to update Medium URL: ${error.message}`);
+    }
   },
 
   /**
    * Delete log entry
    */
-  delete(id: number): void {
-    query.run('DELETE FROM publishing_log WHERE id = ?', [id]);
+  async delete(id: number): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('publishing_log')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to delete publishing log: ${error.message}`);
+    }
   },
 };

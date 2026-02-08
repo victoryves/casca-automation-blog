@@ -1,102 +1,198 @@
 /**
- * Source Database Operations
+ * Source Database Operations - Supabase
  */
 
-import { query } from '../client.js';
+import { getSupabase } from '../supabase.js';
 import type { Source } from '../../types/index.js';
 
 export const sourceOps = {
   /**
    * Create a new source
    */
-  create(source: Omit<Source, 'id'>): number {
-    const result = query.run(
-      `INSERT INTO sources (artist_id, url, institution, credibility_score, content_summary)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        source.artist_id,
-        source.url,
-        source.institution,
-        source.credibility_score ?? 1.0,
-        source.content_summary ?? null,
-      ]
-    );
-    return result.lastInsertRowid as number;
+  async create(source: Omit<Source, 'id'>): Promise<number> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('sources')
+      .insert({
+        artist_id: source.artist_id,
+        url: source.url,
+        institution: source.institution,
+        credibility_score: source.credibility_score ?? 1.0,
+        content_summary: source.content_summary ?? null,
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create source: ${error.message}`);
+    }
+
+    return data.id;
   },
 
   /**
    * Find source by ID
    */
-  findById(id: number): Source | undefined {
-    return query.get<Source>('SELECT * FROM sources WHERE id = ?', [id]);
+  async findById(id: number): Promise<Source | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('sources')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return null;
+      }
+      throw new Error(`Failed to find source: ${error.message}`);
+    }
+
+    return data as Source;
   },
 
   /**
    * Find all sources for an artist
    */
-  findByArtistId(artistId: number): Source[] {
-    return query.all<Source>('SELECT * FROM sources WHERE artist_id = ? ORDER BY credibility_score DESC', [
-      artistId,
-    ]);
+  async findByArtistId(artistId: number): Promise<Source[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('sources')
+      .select('*')
+      .eq('artist_id', artistId)
+      .order('credibility_score', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find sources for artist: ${error.message}`);
+    }
+
+    return data as Source[];
   },
 
   /**
    * Find source by URL
    */
-  findByUrl(url: string): Source | undefined {
-    return query.get<Source>('SELECT * FROM sources WHERE url = ?', [url]);
+  async findByUrl(url: string): Promise<Source | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('sources')
+      .select('*')
+      .eq('url', url)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to find source by URL: ${error.message}`);
+    }
+
+    return data as Source | null;
   },
 
   /**
    * Check if source exists for artist
    */
-  exists(artistId: number, url: string): boolean {
-    const result = query.get<{ count: number }>(
-      'SELECT COUNT(*) as count FROM sources WHERE artist_id = ? AND url = ?',
-      [artistId, url]
-    );
-    return (result?.count ?? 0) > 0;
+  async exists(artistId: number, url: string): Promise<boolean> {
+    const supabase = getSupabase();
+
+    const { count, error } = await supabase
+      .from('sources')
+      .select('*', { count: 'exact', head: true })
+      .eq('artist_id', artistId)
+      .eq('url', url);
+
+    if (error) {
+      throw new Error(`Failed to check source existence: ${error.message}`);
+    }
+
+    return (count ?? 0) > 0;
   },
 
   /**
    * Get sources with minimum credibility
    */
-  findByMinCredibility(artistId: number, minScore: number): Source[] {
-    return query.all<Source>(
-      'SELECT * FROM sources WHERE artist_id = ? AND credibility_score >= ? ORDER BY credibility_score DESC',
-      [artistId, minScore]
-    );
+  async findByMinCredibility(artistId: number, minScore: number): Promise<Source[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('sources')
+      .select('*')
+      .eq('artist_id', artistId)
+      .gte('credibility_score', minScore)
+      .order('credibility_score', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find sources by credibility: ${error.message}`);
+    }
+
+    return data as Source[];
   },
 
   /**
    * Count sources for artist
    */
-  countForArtist(artistId: number): number {
-    const result = query.get<{ count: number }>(
-      'SELECT COUNT(*) as count FROM sources WHERE artist_id = ?',
-      [artistId]
-    );
-    return result?.count ?? 0;
+  async countForArtist(artistId: number): Promise<number> {
+    const supabase = getSupabase();
+
+    const { count, error } = await supabase
+      .from('sources')
+      .select('*', { count: 'exact', head: true })
+      .eq('artist_id', artistId);
+
+    if (error) {
+      throw new Error(`Failed to count sources: ${error.message}`);
+    }
+
+    return count ?? 0;
   },
 
   /**
    * Update source credibility score
    */
-  updateCredibility(id: number, score: number): void {
-    query.run('UPDATE sources SET credibility_score = ? WHERE id = ?', [score, id]);
+  async updateCredibility(id: number, score: number): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('sources')
+      .update({ credibility_score: score })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to update source credibility: ${error.message}`);
+    }
   },
 
   /**
    * Delete source
    */
-  delete(id: number): void {
-    query.run('DELETE FROM sources WHERE id = ?', [id]);
+  async delete(id: number): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('sources')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to delete source: ${error.message}`);
+    }
   },
 
   /**
    * Delete all sources for artist
    */
-  deleteByArtistId(artistId: number): void {
-    query.run('DELETE FROM sources WHERE artist_id = ?', [artistId]);
+  async deleteByArtistId(artistId: number): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('sources')
+      .delete()
+      .eq('artist_id', artistId);
+
+    if (error) {
+      throw new Error(`Failed to delete sources for artist: ${error.message}`);
+    }
   },
 };

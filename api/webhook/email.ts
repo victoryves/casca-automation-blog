@@ -8,7 +8,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { EmailModule } from '../../src/modules/email/index.js';
 import { WorkflowOrchestrator } from '../../src/orchestrator/workflow.js';
 import { draftOps } from '../../src/db/operations/index.js';
-import { initDatabase, closeDatabase } from '../../src/db/client.js';
+import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
   // Only accept POST requests
@@ -48,9 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
 
     // Initialize database
-    initDatabase({
-      path: process.env.DATABASE_PATH || './data/casca.db',
-    });
+    initDatabase();
 
     // Check for approval keyword
     const emailModule = new EmailModule(process.env.RESEND_API_KEY!);
@@ -65,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     console.log('✓ Approval detected!');
 
     // Get most recent sent draft
-    const draft = draftOps.findMostRecentSent();
+    const draft = await draftOps.findMostRecentSent();
 
     if (!draft) {
       console.error('No sent draft found');

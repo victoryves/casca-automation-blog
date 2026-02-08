@@ -1,108 +1,183 @@
 /**
- * Draft Database Operations
+ * Draft Database Operations - Supabase
  */
 
-import { query } from '../client.js';
+import { getSupabase } from '../supabase.js';
 import type { Draft, DraftStatus, Image } from '../../types/index.js';
 
 export const draftOps = {
   /**
    * Create a new draft
    */
-  create(draft: Omit<Draft, 'id'>, images?: Image[]): number {
-    const result = query.run(
-      `INSERT INTO drafts (artist_id, title, subtitle, content, images, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        draft.artist_id,
-        draft.title,
-        draft.subtitle ?? null,
-        draft.content,
-        images ? JSON.stringify(images) : null,
-        draft.status ?? 'pending',
-      ]
-    );
-    return result.lastInsertRowid as number;
+  async create(draft: Omit<Draft, 'id'>, images?: Image[]): Promise<number> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('drafts')
+      .insert({
+        artist_id: draft.artist_id,
+        title: draft.title,
+        subtitle: draft.subtitle ?? null,
+        content: draft.content,
+        images: images ? JSON.stringify(images) : null,
+        status: draft.status ?? 'pending',
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create draft: ${error.message}`);
+    }
+
+    return data.id;
   },
 
   /**
    * Find draft by ID
    */
-  findById(id: number): Draft | undefined {
-    return query.get<Draft>('SELECT * FROM drafts WHERE id = ?', [id]);
+  async findById(id: number): Promise<Draft | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return null;
+      }
+      throw new Error(`Failed to find draft: ${error.message}`);
+    }
+
+    return data as Draft;
   },
 
   /**
    * Find all drafts for an artist
    */
-  findByArtistId(artistId: number): Draft[] {
-    return query.all<Draft>('SELECT * FROM drafts WHERE artist_id = ? ORDER BY created_at DESC', [
-      artistId,
-    ]);
+  async findByArtistId(artistId: number): Promise<Draft[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('*')
+      .eq('artist_id', artistId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find drafts for artist: ${error.message}`);
+    }
+
+    return data as Draft[];
   },
 
   /**
    * Find drafts by status
    */
-  findByStatus(status: DraftStatus): Draft[] {
-    return query.all<Draft>('SELECT * FROM drafts WHERE status = ? ORDER BY created_at DESC', [
-      status,
-    ]);
+  async findByStatus(status: DraftStatus): Promise<Draft[]> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('*')
+      .eq('status', status)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to find drafts by status: ${error.message}`);
+    }
+
+    return data as Draft[];
   },
 
   /**
    * Get most recently sent draft
    */
-  findMostRecentSent(): Draft | undefined {
-    return query.get<Draft>(
-      "SELECT * FROM drafts WHERE status = 'sent' ORDER BY sent_at DESC LIMIT 1"
-    );
+  async findMostRecentSent(): Promise<Draft | null> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('*')
+      .eq('status', 'sent')
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to find most recent sent draft: ${error.message}`);
+    }
+
+    return data as Draft | null;
   },
 
   /**
    * Check if email already sent today
    */
-  emailSentToday(): boolean {
+  async emailSentToday(): Promise<boolean> {
+    const supabase = getSupabase();
     const today = new Date().toISOString().split('T')[0];
-    const result = query.get<{ count: number }>(
-      "SELECT COUNT(*) as count FROM drafts WHERE status = 'sent' AND DATE(sent_at) = ?",
-      [today]
-    );
-    return (result?.count ?? 0) > 0;
+
+    const { count, error } = await supabase
+      .from('drafts')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'sent')
+      .gte('sent_at', `${today}T00:00:00.000Z`)
+      .lt('sent_at', `${today}T23:59:59.999Z`);
+
+    if (error) {
+      throw new Error(`Failed to check if email sent today: ${error.message}`);
+    }
+
+    return (count ?? 0) > 0;
   },
 
   /**
    * Update draft status
    */
-  updateStatus(id: number, status: DraftStatus): void {
-    const updates: Record<string, string | null> = { status };
+  async updateStatus(id: number, status: DraftStatus): Promise<void> {
+    const supabase = getSupabase();
+
+    const updates: any = { status };
 
     if (status === 'sent') {
       updates.sent_at = new Date().toISOString();
     }
 
-    const setClauses = Object.keys(updates)
-      .map((key) => `${key} = ?`)
-      .join(', ');
-    const values = [...Object.values(updates), id];
+    const { error } = await supabase
+      .from('drafts')
+      .update(updates)
+      .eq('id', id);
 
-    query.run(`UPDATE drafts SET ${setClauses} WHERE id = ?`, values);
+    if (error) {
+      throw new Error(`Failed to update draft status: ${error.message}`);
+    }
   },
 
   /**
    * Update draft images
    */
-  updateImages(id: number, images: Image[]): void {
-    const imagesJson = JSON.stringify(images);
-    query.run('UPDATE drafts SET images = ? WHERE id = ?', [imagesJson, id]);
+  async updateImages(id: number, images: Image[]): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('drafts')
+      .update({ images: JSON.stringify(images) })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to update draft images: ${error.message}`);
+    }
   },
 
   /**
    * Get draft with images parsed
    */
-  findByIdWithImages(id: number): (Draft & { parsedImages: Image[] }) | undefined {
-    const draft = query.get<Draft>('SELECT * FROM drafts WHERE id = ?', [id]);
-    if (!draft) return undefined;
+  async findByIdWithImages(id: number): Promise<(Draft & { parsedImages: Image[] }) | null> {
+    const draft = await this.findById(id);
+    if (!draft) return null;
 
     return {
       ...draft,
@@ -113,18 +188,34 @@ export const draftOps = {
   /**
    * Delete draft
    */
-  delete(id: number): void {
-    query.run('DELETE FROM drafts WHERE id = ?', [id]);
+  async delete(id: number): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('drafts')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to delete draft: ${error.message}`);
+    }
   },
 
   /**
    * Count drafts by status
    */
-  countByStatus(status: DraftStatus): number {
-    const result = query.get<{ count: number }>(
-      'SELECT COUNT(*) as count FROM drafts WHERE status = ?',
-      [status]
-    );
-    return result?.count ?? 0;
+  async countByStatus(status: DraftStatus): Promise<number> {
+    const supabase = getSupabase();
+
+    const { count, error } = await supabase
+      .from('drafts')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', status);
+
+    if (error) {
+      throw new Error(`Failed to count drafts: ${error.message}`);
+    }
+
+    return count ?? 0;
   },
 };
