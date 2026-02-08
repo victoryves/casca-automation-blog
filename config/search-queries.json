@@ -1,8 +1,8 @@
 {
   "queries": [
     {
-      "query": "\"artist biography\" OR \"artista biografia\" born Recife OR Salvador OR Fortaleza painter sculptor",
-      "description": "Artist biographies from major Northeast cities"
+      "query": "artista nascido Recife OR Salvador Bahia OR Fortaleza Ceará pintor biografia",
+      "description": "Artists explicitly born in Northeast cities"
     },
     {
       "query": "xilogravura artist \"J. Borges\" OR \"Gilvan Samico\" OR similar woodcut Northeast Brazil",

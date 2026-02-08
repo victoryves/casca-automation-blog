@@ -108,14 +108,23 @@ export class VerificationModule {
       console.log(`  ✓ Sources: ${sources.length} (${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`);
     }
 
-    // Check 3: Northeast Brazil origin
-    const isFromNortheast = this.isFromNortheast(artist);
+    // Check 3: Northeast Brazil origin (check sources if state is unknown)
+    let isFromNortheast = this.isFromNortheast(artist);
+
+    // If state unknown, check if sources mention Northeast states
+    if (!isFromNortheast && !artist.birthplace_state) {
+      isFromNortheast = this.sourcesIndicateNortheast(sources);
+      if (isFromNortheast) {
+        console.log(`  ✓ From Northeast Brazil (inferred from sources)`);
+      }
+    }
+
     if (!isFromNortheast) {
       verified = false;
       reasons.push(`Not from Northeast Brazil (state: ${artist.birthplace_state ?? 'unknown'})`);
       console.log(`  ✗ Not from Northeast Brazil`);
     } else {
-      console.log(`  ✓ From Northeast Brazil: ${artist.birthplace_state}`);
+      console.log(`  ✓ From Northeast Brazil: ${artist.birthplace_state ?? 'inferred'}`);
     }
 
     // Check 4: Visual artist classification
@@ -152,6 +161,31 @@ export class VerificationModule {
       sources,
       reasons,
     };
+  }
+
+  /**
+   * Check if sources mention Northeast states (for cases where artist.birthplace_state is unknown)
+   */
+  private sourcesIndicateNortheast(sources: Source[]): boolean {
+    const northeastTerms = [
+      'recife', 'salvador', 'fortaleza', 'natal', 'joão pessoa',
+      'pernambuco', 'bahia', 'ceará', 'paraíba', 'alagoas',
+      'sergipe', 'maranhão', 'piauí', 'rio grande do norte',
+      'nordeste', 'northeast brazil'
+    ];
+
+    for (const source of sources) {
+      const content = (source.content_summary ?? '').toLowerCase();
+      const url = source.url.toLowerCase();
+
+      for (const term of northeastTerms) {
+        if (content.includes(term) || url.includes(term)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
