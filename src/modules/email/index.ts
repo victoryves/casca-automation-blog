@@ -28,13 +28,13 @@ export class EmailModule {
    */
   async sendApprovalEmail(options: SendApprovalEmailOptions): Promise<void> {
     const config = getConfig();
-    const draft = draftOps.findById(options.draftId);
+    const draft = await draftOps.findById(options.draftId);
 
     if (!draft) {
       throw new Error(`Draft ${options.draftId} not found`);
     }
 
-    const artist = artistOps.findById(draft.artist_id);
+    const artist = await artistOps.findById(draft.artist_id);
     if (!artist) {
       throw new Error(`Artist ${draft.artist_id} not found`);
     }
@@ -42,7 +42,7 @@ export class EmailModule {
     console.log(`\n📧 Sending approval email for: ${draft.title}`);
 
     // Get sources for the artist
-    const sources = sourceOps.findByArtistId(draft.artist_id);
+    const sources = await sourceOps.findByArtistId(draft.artist_id);
     console.log(`  Found ${sources?.length || 0} sources for artist ID ${draft.artist_id}`);
     if (sources && sources.length > 0) {
       sources.forEach((s, i) => {
@@ -82,14 +82,14 @@ export class EmailModule {
 
       // Save ONLY successful images to draft (for later publishing)
       if (successfulImages.length > 0) {
-        draftOps.updateImages(options.draftId, successfulImages);
+        await draftOps.updateImages(options.draftId, successfulImages);
         console.log(`  ✓ Saved ${successfulImages.length} validated images to draft`);
       } else if (options.images && options.images.length > 0) {
         console.log(`  ⚠️ No images validated - not saving to draft`);
       }
 
       // Update draft status
-      draftOps.updateStatus(options.draftId, 'sent');
+      await draftOps.updateStatus(options.draftId, 'sent');
       console.log(`  ✓ Draft marked as sent`);
     } catch (error) {
       console.error('Failed to send email:', error);

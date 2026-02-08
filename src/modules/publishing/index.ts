@@ -26,7 +26,7 @@ export class PublishingModule {
   async publish(draftId: number): Promise<PublishingResult> {
     console.log(`\n🚀 Publishing draft ${draftId} to Hashnode...`);
 
-    const draft = draftOps.findById(draftId);
+    const draft = await draftOps.findById(draftId);
     if (!draft) {
       return {
         success: false,
@@ -43,7 +43,7 @@ export class PublishingModule {
       };
     }
 
-    const artist = artistOps.findById(draft.artist_id);
+    const artist = await artistOps.findById(draft.artist_id);
     if (!artist) {
       return {
         success: false,
@@ -59,7 +59,7 @@ export class PublishingModule {
 
     try {
       // Get sources for the article
-      const sources = sourceOps.findByArtistId(draft.artist_id);
+      const sources = await sourceOps.findByArtistId(draft.artist_id);
 
       // Generate Hashnode-formatted content (HTML)
       const content = await this.generateHashnodeContent(draft, artist.full_name, images, sources);
@@ -124,7 +124,7 @@ export class PublishingModule {
       console.log(`  ✓ Published to Hashnode: ${hashnodeUrl}`);
 
       // Log publication
-      const logId = publishingOps.create({
+      const logId = await publishingOps.create({
         draft_id: draftId,
         medium_url: hashnodeUrl, // Using same field for now
       });
@@ -132,7 +132,7 @@ export class PublishingModule {
       console.log(`  ✓ Publication logged: ${logId}`);
 
       // Update artist status
-      artistOps.updateStatus(artist.id!, 'published');
+      await artistOps.updateStatus(artist.id!, 'published');
       console.log(`  ✓ Artist marked as published`);
 
       return {
@@ -149,7 +149,7 @@ export class PublishingModule {
       }
 
       // Log error
-      publishingOps.create({
+      await publishingOps.create({
         draft_id: draftId,
         error_message: errorMsg,
       });
@@ -245,11 +245,11 @@ export class PublishingModule {
   /**
    * Update Medium URL after publication confirmation
    */
-  updateMediumUrl(draftId: number, mediumUrl: string): void {
-    const logs = publishingOps.findByDraftId(draftId);
+  async updateMediumUrl(draftId: number, mediumUrl: string): Promise<void> {
+    const logs = await publishingOps.findByDraftId(draftId);
     if (logs.length > 0) {
       const latestLog = logs[0];
-      publishingOps.updateMediumUrl(latestLog.id!, mediumUrl);
+      await publishingOps.updateMediumUrl(latestLog.id!, mediumUrl);
       console.log(`✓ Updated Medium URL for draft ${draftId}`);
     }
   }
