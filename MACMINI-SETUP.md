@@ -25,33 +25,38 @@ npm install
 
 # 4. Criar arquivo .env com as credenciais
 echo "🔐 Criando arquivo .env..."
-cat > "$PROJECT_DIR/.env" << 'ENVEOF'
-# Database (Supabase)
-SUPABASE_URL=https://xmtwoullpdvytamtbafz.supabase.co
-SUPABASE_KEY=sb_publishable_HPqEjuvcCsQag9q7Zx3nZg_IZgFBG-V
-
-# APIs
-ANTHROPIC_API_KEY=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
-RESEND_API_KEY=re_6cui3wgF_KNZy7GsmePhY5ZEqhcKca8Sj
-TAVILY_API_KEY=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
-
-# Email
-APPROVAL_EMAIL=victoryves@gmail.com
-FROM_EMAIL=onboarding@resend.dev
-
-# Publishing
-AUTHOR_NAME=Victor Yves
-
-# Hashnode
-HASHNODE_API_KEY=dfb2eebe-5524-403c-84a3-5ae5463fde75
-HASHNODE_PUBLICATION_ID=6988864547396a0a8bf533a2
-
-# Deployment
-WEBHOOK_SECRET=f9c7a2d4b1e84e6fb0a9c3d7e5a1c8f2-9a4e6b7d2c0f1e8a5b3d7c9e4f6
-
-# Logging
-LOG_LEVEL=info
-ENVEOF
+echo "⚠️  IMPORTANTE: Você precisa adicionar suas credenciais reais no .env"
+echo "Crie manualmente o arquivo .env com suas próprias keys:"
+echo ""
+echo "cat > \$PROJECT_DIR/.env << 'ENVEOF'"
+echo "# Database (Supabase)"
+echo "SUPABASE_URL=your-supabase-url"
+echo "SUPABASE_KEY=your-supabase-key"
+echo ""
+echo "# APIs"
+echo "ANTHROPIC_API_KEY=sk-ant-xxxxx"
+echo "RESEND_API_KEY=re_xxxxx"
+echo "TAVILY_API_KEY=tvly-xxxxx"
+echo ""
+echo "# Email"
+echo "APPROVAL_EMAIL=your@email.com"
+echo "FROM_EMAIL=noreply@yourdomain.com"
+echo ""
+echo "# Publishing"
+echo "AUTHOR_NAME=Your Name"
+echo ""
+echo "# Hashnode"
+echo "HASHNODE_API_KEY=your-hashnode-key"
+echo "HASHNODE_PUBLICATION_ID=your-publication-id"
+echo ""
+echo "# Deployment"
+echo "WEBHOOK_SECRET=your-webhook-secret"
+echo ""
+echo "# Logging"
+echo "LOG_LEVEL=info"
+echo "ENVEOF"
+echo ""
+echo "⚠️  NUNCA commite o arquivo .env no Git!"
 
 # 5. Criar diretórios de logs
 echo "📁 Criando diretórios de logs..."
