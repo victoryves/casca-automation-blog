@@ -281,11 +281,18 @@ export class EmailModule {
     <div class="approval-section">
       <h3>📝 Article Ready for Review</h3>
       <p>This article about <strong>${artistName}</strong> is ready to publish.</p>
-      <p>To approve and publish this article, simply reply to this email with:</p>
-      <div class="approval-code">poste</div>
+      <p style="font-size: 1.2em; margin: 20px 0;"><strong>Option 1: Quick Approval via OpenClaw</strong></p>
+      <p>Send this command to your OpenClaw Agent:</p>
+      <div class="approval-code" style="background-color: #1a1a1a; color: #00ff00; padding: 15px 20px; font-family: 'Monaco', 'Courier New', monospace; font-size: 1.15em; cursor: pointer; user-select: all;">
+cd /Users/vicyves1/Documents/personal/Vibe\\ Coding/casca-automation-blog && npm run publish
+      </div>
+      <p style="font-size: 0.95em; color: #666; margin-top: 10px;">
+        Copy the command above and paste it in OpenClaw chat.<br>
+        The article will be published to Hashnode immediately.
+      </p>
+      <p style="font-size: 1.2em; margin: 30px 0 10px 0;"><strong>Option 2: Manual Approval</strong></p>
       <p style="font-size: 0.95em; color: #666;">
-        Reply with the exact word "poste" (without quotes) to publish.<br>
-        The article will be sent to Medium for publication.
+        Or reply to this email with the exact word "poste" (not yet automated).
       </p>
     </div>
 
