@@ -1,48 +1,44 @@
 {
   "queries": [
     {
-      "query": "visual artist painter Northeast Brazil Pernambuco Bahia museum collection",
-      "description": "General visual artists from Pernambuco and Bahia"
+      "query": "\"artist biography\" OR \"artista biografia\" born Recife OR Salvador OR Fortaleza painter sculptor",
+      "description": "Artist biographies from major Northeast cities"
     },
     {
-      "query": "artista visual pintor Nordeste Brasil nascido Recife Salvador university",
-      "description": "Artists born in major Northeast cities (Portuguese)"
+      "query": "xilogravura artist \"J. Borges\" OR \"Gilvan Samico\" OR similar woodcut Northeast Brazil",
+      "description": "Woodcut artists (named examples)"
     },
     {
-      "query": "Brazilian sculptor printmaker Northeast Ceará Alagoas contemporary art",
-      "description": "Sculptors and printmakers from Ceará and Alagoas"
+      "query": "ceramista \"Mestre Vitalino\" OR similar Alto do Moura Caruaru pottery artist",
+      "description": "Folk ceramicists (named examples)"
     },
     {
-      "query": "Northeast Brazil artist exhibition gallery Sergipe Paraíba modern art",
-      "description": "Artists with exhibitions from Sergipe and Paraíba"
+      "query": "\"nascido em\" OR \"born in\" Pernambuco OR Bahia OR Ceará pintor escultor artista visual",
+      "description": "Artists born in specific Northeast states"
     },
     {
-      "query": "artista brasileiro Nordeste pintura desenho gravura patrimônio cultural",
-      "description": "Artists associated with cultural heritage (Portuguese)"
+      "query": "contemporary Brazilian artist interview Recife OR Salvador visual art practice",
+      "description": "Contemporary artist interviews"
     },
     {
-      "query": "xilogravura cordel Northeast Brazil popular art artist Recife",
-      "description": "Folk art and woodcut artists"
+      "query": "artista plástico Nordeste biografia obras museu acervo",
+      "description": "Visual artists with museum collections"
     },
     {
-      "query": "ceramista escultor Nordeste Brasil arte popular Caruaru pottery",
-      "description": "Ceramicists and folk sculptors"
+      "query": "\"artist statement\" OR \"sobre o artista\" Northeast Brazil painter contemporary",
+      "description": "Artist statements and bios"
     },
     {
-      "query": "artista naif primitivo Nordeste Brasil pintor autodidata",
-      "description": "Naive and primitive artists (Portuguese)"
+      "query": "gravurista brasileiro Nordeste xilogravura cordel popular art biography",
+      "description": "Brazilian printmakers and folk artists"
     },
     {
-      "query": "Brazilian contemporary artist Bahia Pernambuco gallery exhibition",
-      "description": "Contemporary artists with exhibitions"
+      "query": "photographer artist visual Bahia OR Pernambuco contemporary Brazilian photography",
+      "description": "Contemporary photographers from Northeast"
     },
     {
-      "query": "fotógrafo artista visual Nordeste Fortaleza Natal arte contemporânea",
-      "description": "Photographers and visual artists"
-    },
-    {
-      "query": "muralista grafiteiro street art Nordeste Brasil urban art",
-      "description": "Muralists and street artists"
+      "query": "pintor autodidata Nordeste Brasil arte naif primitiva biography",
+      "description": "Self-taught and naive artists"
     }
   ]
 }

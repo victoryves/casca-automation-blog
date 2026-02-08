@@ -51,6 +51,16 @@ export class VerificationModule {
     'under the lens',
     'collection',
     'coleção',
+    'dissertação',
+    'dissertation',
+    'mestrado',
+    'master',
+    'phd',
+    'thesis',
+    'tese',
+    '.pdf',
+    'arquivo',
+    'document',
   ];
 
   /**
@@ -162,12 +172,30 @@ export class VerificationModule {
     if (nameLower.endsWith(' art') ||
         nameLower.endsWith(' arte') ||
         nameLower.endsWith(' artists') ||
-        nameLower.endsWith(' artistas')) {
+        nameLower.endsWith(' artistas') ||
+        nameLower.endsWith('.pdf')) {
       return false;
     }
 
-    // - Should not start with numbers (like "36th")
+    // - Should not start with numbers (like "36th" or "38th")
     if (/^\d+/.test(name)) {
+      return false;
+    }
+
+    // - Should not contain file extensions
+    if (/\.(pdf|doc|docx|txt)$/i.test(name)) {
+      return false;
+    }
+
+    // - Should not be "List of..." or "Lista de..."
+    if (nameLower.startsWith('list of') || nameLower.startsWith('lista de')) {
+      return false;
+    }
+
+    // - Should have at least one space (person names have first + last name)
+    // BUT allow single names if common in Brazilian art (like just "Vitalino")
+    const wordCount = name.trim().split(/\s+/).length;
+    if (wordCount === 0) {
       return false;
     }
 
