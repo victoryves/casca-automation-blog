@@ -56,16 +56,27 @@ export class PublishingModule {
 
     // Parse images
     const images: Image[] = draft.images ? JSON.parse(draft.images) : [];
+    const coverImage = images[0];
 
     try {
+      if (!coverImage) {
+        throw new Error('No images available for cover image. Draft must include at least one image.');
+      }
+
       // Get sources for the article
       const sources = await sourceOps.findByArtistId(draft.artist_id);
 
       // Generate Hashnode-formatted content (HTML)
-      const content = await this.generateHashnodeContent(draft, artist.full_name, images, sources);
+      const contentImages = images.slice(1);
+      const content = await this.generateHashnodeContent(
+        draft,
+        artist.full_name,
+        contentImages,
+        sources,
+        coverImage
+      );
 
-      // Don't use cover image to avoid duplication in the article
-      const coverImageURL = undefined;
+      const coverImageURL = this.buildProxyUrl(coverImage.url, 1200);
 
       // Publish to Hashnode via GraphQL
       console.log('  Publishing to Hashnode...');
@@ -169,7 +180,8 @@ export class PublishingModule {
     draft: Draft,
     authorName: string,
     images: Image[],
-    sources?: any[]
+    sources?: any[],
+    coverImage?: Image
   ): Promise<string> {
     const config = getConfig();
 
@@ -205,7 +217,7 @@ export class PublishingModule {
           if (imageIndex < positions.length && i === positions[imageIndex]) {
             const img = images[imageIndex];
             // Use image proxy to avoid hotlinking issues
-            const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(img.url)}&w=800&output=webp`;
+            const proxyUrl = this.buildProxyUrl(img.url, 800);
             result.push(`![${img.caption}](${proxyUrl})`);
             result.push(`*${img.attribution}*`);
             imageIndex++;
@@ -236,6 +248,11 @@ export class PublishingModule {
       }
     }
 
+    // Add cover attribution if cover image is not in the body
+    if (coverImage) {
+      content += `\n\n*Imagem de capa: ${coverImage.attribution}*`;
+    }
+
     // Add footer
     content += `\n\n---\n\n*This article is part of the CASCA Archive, documenting visual artists from Northeast Brazil. ${authorName ? `Story about ${authorName}.` : ''}*\n`;
 
@@ -252,5 +269,9 @@ export class PublishingModule {
       await publishingOps.updateMediumUrl(latestLog.id!, mediumUrl);
       console.log(`✓ Updated Medium URL for draft ${draftId}`);
     }
+  }
+
+  private buildProxyUrl(url: string, width = 800): string {
+    return `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=${width}&output=webp`;
   }
 }
