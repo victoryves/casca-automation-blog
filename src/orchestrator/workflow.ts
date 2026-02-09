@@ -5,7 +5,7 @@
  */
 
 import { initDatabase, closeDatabase } from '../db/supabase.js';
-import { artistOps, draftOps } from '../db/operations/index.js';
+import { artistOps, draftOps, sourceOps } from '../db/operations/index.js';
 import { getConfig } from '../config/index.js';
 import { DiscoveryModule } from '../modules/discovery/index.js';
 import { VerificationModule } from '../modules/verification/index.js';
@@ -14,7 +14,7 @@ import { VisualModule } from '../modules/visual/index.js';
 import { EmailModule } from '../modules/email/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
 import { Logger } from '../utils/logger.js';
-import type { WorkflowState } from '../types/index.js';
+import type { WorkflowState, Artist } from '../types/index.js';
 
 export interface WorkflowOptions {
   dryRun?: boolean;
@@ -66,7 +66,8 @@ export class WorkflowOrchestrator {
 
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
-      this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists`);
+      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1);
+      this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
 
       // Step 3: If no verified artists, run discovery loop until we find one
       if (verifiedArtists.length === 0 && !options.skipDiscovery) {
@@ -102,6 +103,7 @@ export class WorkflowOrchestrator {
 
             // Re-fetch verified artists
             verifiedArtists = await artistOps.findVerifiedUnpublished();
+            verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1);
 
             // If we found at least one verified artist, stop discovery loop
             if (verifiedArtists.length > 0) {
@@ -229,5 +231,26 @@ export class WorkflowOrchestrator {
     } finally {
       closeDatabase();
     }
+  }
+
+  private async filterArtistsWithSources(artists: Artist[], minSources: number): Promise<Artist[]> {
+    if (artists.length === 0) return artists;
+
+    const filtered: Artist[] = [];
+    for (const artist of artists) {
+      if (!artist.id) continue;
+      try {
+        const count = await sourceOps.countForArtist(artist.id);
+        if (count >= minSources) {
+          filtered.push(artist);
+        } else {
+          this.logger.warn(`Skipping artist ${artist.id} with ${count} sources (min ${minSources})`);
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to count sources for artist ${artist.id}`, error);
+      }
+    }
+
+    return filtered;
   }
 }
