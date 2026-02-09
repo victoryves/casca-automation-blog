@@ -76,7 +76,7 @@ export class PublishingModule {
         coverImage
       );
 
-      const coverImageURL = this.buildProxyUrl(coverImage.url, 1200);
+      const coverImageURL = this.buildCoverImageUrl(coverImage.url);
 
       // Publish to Hashnode via GraphQL
       console.log('  Publishing to Hashnode...');
@@ -107,7 +107,8 @@ export class PublishingModule {
           ],
           publicationId: this.hashnodePublicationId,
           coverImageOptions: coverImageURL ? {
-            coverImageURL: coverImageURL
+            coverImageURL: coverImageURL,
+            coverImageAttribution: coverImage.attribution,
           } : undefined,
         },
       };
@@ -273,5 +274,13 @@ export class PublishingModule {
 
   private buildProxyUrl(url: string, width = 800): string {
     return `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=${width}&output=webp`;
+  }
+
+  private buildCoverImageUrl(url: string): string {
+    if (url.startsWith('https://')) {
+      return url;
+    }
+
+    return this.buildProxyUrl(url, 1200);
   }
 }
