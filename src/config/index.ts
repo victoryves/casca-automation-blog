@@ -41,6 +41,7 @@ export interface EnvConfig {
 
   // Publishing
   authorName: string;
+  rssUrl?: string;
 
   // Hashnode
   hashnodeApiKey?: string;
@@ -83,6 +84,7 @@ function loadEnvConfig(): EnvConfig {
     fromEmail: process.env.FROM_EMAIL!,
     mediumImportEmail: process.env.MEDIUM_IMPORT_EMAIL,
     authorName: process.env.AUTHOR_NAME!,
+    rssUrl: process.env.RSS_URL,
     hashnodeApiKey: process.env.HASHNODE_API_KEY,
     hashnodePublicationId: process.env.HASHNODE_PUBLICATION_ID,
     vercelUrl: process.env.VERCEL_URL,
