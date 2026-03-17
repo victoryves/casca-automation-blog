@@ -39,6 +39,17 @@ export class EmailModule {
       throw new Error(`Artist ${draft.artist_id} not found`);
     }
 
+    const existingDrafts = await draftOps.findByArtistId(draft.artist_id);
+    const activeSentDraft = existingDrafts.find(
+      (existingDraft) => existingDraft.id !== options.draftId && existingDraft.status === 'sent'
+    );
+
+    if (activeSentDraft) {
+      throw new Error(
+        `Refusing to send duplicate approval email: draft ${activeSentDraft.id} is already in sent status for artist ${draft.artist_id}`
+      );
+    }
+
     console.log(`\n📧 Sending approval email for: ${draft.title}`);
 
     // Get sources for the artist
@@ -390,14 +401,59 @@ export class EmailModule {
    */
   private buildApproveUrl(draftId?: number): string {
     const config = getConfig();
-    const baseUrl = config.env.vercelUrl || 'https://casca-automation-blog.vercel.app';
-    return `${baseUrl}/api/webhook/approve?draft=${draftId}&token=${config.env.webhookSecret}`;
+    return this.buildActionUrl(
+      'approve',
+      draftId,
+      config.env.webhookSecret,
+      config.env.appBaseUrl ?? config.env.vercelUrl
+    );
   }
 
   private buildRejectUrl(draftId?: number): string {
     const config = getConfig();
-    const baseUrl = config.env.vercelUrl || 'https://casca-automation-blog.vercel.app';
-    return `${baseUrl}/api/webhook/reject?draft=${draftId}&token=${config.env.webhookSecret}`;
+    return this.buildActionUrl(
+      'reject',
+      draftId,
+      config.env.webhookSecret,
+      config.env.appBaseUrl ?? config.env.vercelUrl
+    );
+  }
+
+  private buildActionUrl(
+    action: 'approve' | 'reject',
+    draftId: number | undefined,
+    webhookSecret: string | undefined,
+    configuredBaseUrl?: string
+  ): string {
+    if (!draftId) {
+      throw new Error(`Cannot build ${action} URL without draft ID`);
+    }
+
+    if (!webhookSecret) {
+      throw new Error(`Cannot build ${action} URL without WEBHOOK_SECRET`);
+    }
+
+    const baseUrl = this.normalizeBaseUrl(
+      configuredBaseUrl || 'https://casca-automation-blog.vercel.app'
+    );
+    const url = new URL(`/api/webhook/${action}`, baseUrl);
+    url.searchParams.set('draft', String(draftId));
+    url.searchParams.set('token', webhookSecret);
+    const builtUrl = url.toString();
+
+    if (!builtUrl.includes('token=')) {
+      throw new Error(`Refusing to build ${action} URL without token query param`);
+    }
+
+    return builtUrl;
+  }
+
+  private normalizeBaseUrl(baseUrl: string): string {
+    if (/^https?:\/\//i.test(baseUrl)) {
+      return baseUrl;
+    }
+
+    return `https://${baseUrl}`;
   }
 
   parseApprovalReply(emailBody: string): boolean {

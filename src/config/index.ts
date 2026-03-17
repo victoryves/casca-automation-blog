@@ -48,6 +48,7 @@ export interface EnvConfig {
   hashnodePublicationId?: string;
 
   // Deployment
+  appBaseUrl?: string;
   vercelUrl?: string;
   webhookSecret: string;
 
@@ -87,6 +88,7 @@ function loadEnvConfig(): EnvConfig {
     rssUrl: process.env.RSS_URL,
     hashnodeApiKey: process.env.HASHNODE_API_KEY,
     hashnodePublicationId: process.env.HASHNODE_PUBLICATION_ID,
+    appBaseUrl: process.env.APP_BASE_URL,
     vercelUrl: process.env.VERCEL_URL,
     webhookSecret: process.env.WEBHOOK_SECRET!,
     logLevel: (process.env.LOG_LEVEL as EnvConfig['logLevel']) || 'info',
