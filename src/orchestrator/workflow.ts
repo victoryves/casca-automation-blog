@@ -287,9 +287,10 @@ export class WorkflowOrchestrator {
       await draftOps.updateStatus(draftId, 'rejected');
       this.logger.info(`Draft ${draftId} marked as rejected`);
 
-      // Mark artist as rejected so they won't be picked again
-      await artistOps.updateStatus(draft.artist_id, 'rejected');
-      this.logger.info(`Artist ${draft.artist_id} marked as rejected`);
+      // Mark artist as published so they won't be picked again by findVerifiedUnpublished
+      // (DB constraint only allows discovered/verified/published, so we use 'published' to exclude)
+      await artistOps.updateStatus(draft.artist_id, 'published');
+      this.logger.info(`Artist ${draft.artist_id} marked as published (excluded from future picks)`);
 
       closeDatabase();
     } catch (error) {

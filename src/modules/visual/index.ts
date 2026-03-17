@@ -418,8 +418,12 @@ When in doubt on any criterion, say false.`,
    * Ensure images directory exists.
    */
   private ensureImagesDir(): void {
-    if (!fs.existsSync(this.imagesDir)) {
-      fs.mkdirSync(this.imagesDir, { recursive: true });
+    try {
+      if (!fs.existsSync(this.imagesDir)) {
+        fs.mkdirSync(this.imagesDir, { recursive: true });
+      }
+    } catch {
+      // Ignore in serverless environments where filesystem is read-only
     }
   }
 
