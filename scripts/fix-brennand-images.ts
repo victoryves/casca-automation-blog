@@ -13,9 +13,14 @@ async function fixImages() {
   console.log('🔧 Fixing Francisco Brennand images...\n');
 
   // Source fresh images
-  const visualModule = new VisualModule();
+  const visualModule = new VisualModule(config.env.anthropicApiKey);
   console.log('🖼️  Sourcing fresh images...');
-  const allImages = await visualModule.sourceImages('Francisco Brennand', 17, 12);
+  const allImages = await visualModule.sourceImages(
+    { full_name: 'Francisco Brennand' },
+    [],
+    17,
+    12
+  );
   console.log(`  Found ${allImages.length} image URLs\n`);
 
   // Validate images (download and check)

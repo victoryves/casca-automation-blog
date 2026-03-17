@@ -3,13 +3,24 @@
   "builds": [
     {
       "src": "api/**/*.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["config/**/*.json", "config/**/*.html"]
+      }
     }
   ],
   "routes": [
     {
       "src": "/api/webhook/email",
       "dest": "/api/webhook/email.ts"
+    },
+    {
+      "src": "/api/webhook/approve",
+      "dest": "/api/webhook/approve.ts"
+    },
+    {
+      "src": "/api/webhook/reject",
+      "dest": "/api/webhook/reject.ts"
     }
   ]
 }

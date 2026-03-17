@@ -110,6 +110,9 @@ export class PublishingModule {
             coverImageURL: coverImageURL,
             coverImageAttribution: coverImage.attribution,
           } : undefined,
+          settings: {
+            delisted: false,
+          },
         },
       };
 

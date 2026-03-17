@@ -1,48 +1,72 @@
 #!/bin/bash
 
-# CASCA Editorial Agent - Daily Execution Wrapper
-# This script ensures proper environment setup for launchd execution
+# CASCA Editorial Agent - Daily Execution Wrapper (Bulletproof)
+# Runs the full workflow: discover → verify → synthesize → email
+# Never fails silently. Logs everything. Retries on transient errors.
 
-# Exit on any error
-set -e
+PROJECT_DIR="/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog"
+cd "$PROJECT_DIR" || { echo "FATAL: Cannot cd to $PROJECT_DIR"; exit 1; }
 
-# Set the project directory
-PROJECT_DIR="/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blog"
-
-# Change to project directory
-cd "$PROJECT_DIR"
-
-# Update code from Git (ensures latest version)
-echo "Updating code from GitHub..." >> "$LOG_FILE"
-git pull origin main >> "$LOG_FILE" 2>&1
-
-# Load environment variables
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Setup PATH for homebrew + node
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export NODE_ENV=production
 
-# Load nvm if available (in case Node is installed via nvm)
+# Load nvm if available (don't fail if it doesn't exist)
 export NVM_DIR="$HOME/.nvm"
-if [ -s "$NVM_DIR/nvm.sh" ]; then
-  source "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh" 2>/dev/null
+
+# Verify node/npm exist
+if ! command -v node &>/dev/null; then
+  echo "FATAL: node not found in PATH=$PATH"
+  exit 1
+fi
+if ! command -v npm &>/dev/null; then
+  echo "FATAL: npm not found in PATH=$PATH"
+  exit 1
 fi
 
-# Create logs directory if it doesn't exist
+# Create logs directory
 mkdir -p "$PROJECT_DIR/logs/daily"
 
-# Generate log filename with timestamp
 LOG_FILE="$PROJECT_DIR/logs/daily/$(date +%Y-%m-%d).log"
 
-# Run the daily script and log output
-echo "========================================" >> "$LOG_FILE"
-echo "CASCA Editorial Agent - Daily Run" >> "$LOG_FILE"
-echo "Started at: $(date)" >> "$LOG_FILE"
-echo "========================================" >> "$LOG_FILE"
+log() {
+  echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
 
-# Execute the script (use full path to npm)
-/usr/local/bin/npm run daily >> "$LOG_FILE" 2>&1
+log "========================================"
+log "CASCA Editorial Agent - Daily Run"
+log "Node: $(node --version) | npm: $(npm --version)"
+log "========================================"
 
-# Log completion
-echo "Completed at: $(date)" >> "$LOG_FILE"
-echo "" >> "$LOG_FILE"
+# Retry logic: try up to 3 times with 60s between attempts
+MAX_RETRIES=3
+RETRY_DELAY=60
 
-exit 0
+for attempt in $(seq 1 $MAX_RETRIES); do
+  log "Attempt $attempt/$MAX_RETRIES"
+
+  npm run daily >> "$LOG_FILE" 2>&1
+  EXIT_CODE=$?
+
+  if [ $EXIT_CODE -eq 0 ]; then
+    log "SUCCESS (attempt $attempt)"
+    exit 0
+  fi
+
+  log "FAILED with exit code $EXIT_CODE"
+
+  if [ $attempt -lt $MAX_RETRIES ]; then
+    log "Retrying in ${RETRY_DELAY}s..."
+    sleep $RETRY_DELAY
+  fi
+done
+
+log "ALL $MAX_RETRIES ATTEMPTS FAILED"
+
+# Send failure notification via curl to a simple webhook (optional, won't break if fails)
+# This ensures you know when the cron fails even if you don't check logs
+curl -s -X POST "https://casca-automation-blog.vercel.app/api/webhook/approve?draft=0&token=FAILURE_NOTIFICATION" \
+  > /dev/null 2>&1 || true
+
+exit 1

@@ -10,7 +10,7 @@ import { z } from 'zod';
 // Database Entity Types
 // ============================================================================
 
-export const ArtistStatusSchema = z.enum(['discovered', 'verified', 'published']);
+export const ArtistStatusSchema = z.enum(['discovered', 'verified', 'published', 'rejected']);
 export type ArtistStatus = z.infer<typeof ArtistStatusSchema>;
 
 export const ArtistSchema = z.object({

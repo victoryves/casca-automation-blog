@@ -13,6 +13,7 @@ import { SynthesisModule } from '../modules/synthesis/index.js';
 import { VisualModule } from '../modules/visual/index.js';
 import { EmailModule } from '../modules/email/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
+import { ScraperBridge } from '../modules/scraper-bridge/index.js';
 import { Logger } from '../utils/logger.js';
 import type { WorkflowState, Artist } from '../types/index.js';
 
@@ -52,8 +53,8 @@ export class WorkflowOrchestrator {
       // Initialize modules
       const discovery = new DiscoveryModule(this.config.env.tavilyApiKey);
       const verification = new VerificationModule();
-      const synthesis = new SynthesisModule(this.config.env.anthropicApiKey);
-      const visual = new VisualModule();
+      const synthesis = new SynthesisModule(this.config.env.openaiApiKey);
+      const visual = new VisualModule(this.config.env.openaiApiKey);
       const email = new EmailModule(this.config.env.resendApiKey);
 
       // Step 1: Check if email already sent today
@@ -137,6 +138,37 @@ export class WorkflowOrchestrator {
       state.artist_id = selectedArtist.id;
       this.logger.info(`Selected artist: ${selectedArtist.full_name} (ID: ${selectedArtist.id})`);
 
+      // Step 6.5: Enrich sources with Scrapling (optional, non-fatal)
+      try {
+        const scraperBridge = new ScraperBridge();
+        if (await scraperBridge.isAvailable()) {
+          this.logger.info('Enriching sources with Scrapling');
+          const sources = await sourceOps.findByArtistId(selectedArtist.id!);
+          let enriched = 0;
+
+          for (const source of sources) {
+            // Only enrich sources with short or missing content summaries
+            if (source.content_summary && source.content_summary.length >= 400) continue;
+
+            try {
+              const result = await scraperBridge.fetchPage(source.url);
+              if (result.success && result.content && result.content.length > 100) {
+                await sourceOps.updateContentSummary(source.id!, result.content);
+                enriched++;
+              }
+            } catch (err) {
+              this.logger.warn(`Failed to enrich source ${source.id}`, err);
+            }
+          }
+
+          if (enriched > 0) {
+            this.logger.info(`Enriched ${enriched}/${sources.length} sources`);
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Source enrichment failed (non-fatal)', error);
+      }
+
       // Step 7: Synthesize article
       this.logger.info('Starting article synthesis');
       state.status = 'synthesizing';
@@ -145,21 +177,25 @@ export class WorkflowOrchestrator {
       state.draft_id = synthesisResult.draft.id;
       this.logger.info('Article synthesized', synthesisResult.metadata);
 
-      // Step 8: Source visual materials
-      this.logger.info('Sourcing images');
+      // Step 8: Source visual materials (with verified sources)
+      this.logger.info('Sourcing verified images');
+      const artistSources = await sourceOps.findByArtistId(selectedArtist.id!);
       const images = await visual.sourceImages(
-        selectedArtist.full_name,
+        {
+          full_name: selectedArtist.full_name,
+          visual_practice: selectedArtist.visual_practice ?? undefined,
+          birthplace_city: selectedArtist.birthplace_city ?? undefined,
+          birthplace_state: selectedArtist.birthplace_state ?? undefined,
+        },
+        artistSources,
         synthesisResult.draft.id!,
         3
       );
-      this.logger.info(`Sourced ${images.length} images`);
+      this.logger.info(`Sourced ${images.length} verified images`);
 
-      // Validate that we have at least one image
+      // Zero images = warning, not fatal error (email supports no images)
       if (images.length === 0) {
-        this.logger.error('No images found - cannot send email without images');
-        state.status = 'error';
-        state.errors.push('No images found for article');
-        return state;
+        this.logger.warn('No verified images found — article will be sent without images');
       }
 
       // Step 9: Send approval email
@@ -231,6 +267,40 @@ export class WorkflowOrchestrator {
     } finally {
       closeDatabase();
     }
+  }
+
+  /**
+   * Handle rejection: mark draft/artist as rejected, then re-run workflow for a new artist
+   */
+  async handleRejection(draftId: number): Promise<WorkflowState> {
+    this.logger.info(`Processing rejection for draft ${draftId}`);
+
+    try {
+      initDatabase();
+
+      const draft = await draftOps.findById(draftId);
+      if (!draft) {
+        throw new Error(`Draft ${draftId} not found`);
+      }
+
+      // Mark draft as rejected
+      await draftOps.updateStatus(draftId, 'rejected');
+      this.logger.info(`Draft ${draftId} marked as rejected`);
+
+      // Mark artist as rejected so they won't be picked again
+      await artistOps.updateStatus(draft.artist_id, 'rejected');
+      this.logger.info(`Artist ${draft.artist_id} marked as rejected`);
+
+      closeDatabase();
+    } catch (error) {
+      this.logger.error('Failed to mark rejection', error);
+      closeDatabase();
+      throw error;
+    }
+
+    // Re-run the full workflow to find a new artist
+    this.logger.info('Re-running workflow to find a new artist');
+    return this.execute({ forceRun: true });
   }
 
   private async filterArtistsWithSources(artists: Artist[], minSources: number): Promise<Artist[]> {

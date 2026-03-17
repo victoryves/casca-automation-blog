@@ -5,14 +5,21 @@
  */
 
 import { VisualModule } from '../src/modules/visual/index.js';
+import { getConfig } from '../src/config/index.js';
 
-const visualModule = new VisualModule();
+const config = getConfig();
+const visualModule = new VisualModule(config.env.anthropicApiKey);
 
 async function testImages() {
   console.log('🖼️  Testing image sourcing for Cícero Dias...\n');
 
   try {
-    const images = await visualModule.sourceImages('Cícero Dias', 999, 3);
+    const images = await visualModule.sourceImages(
+      { full_name: 'Cícero Dias', visual_practice: 'pintura' },
+      [],
+      999,
+      3
+    );
 
     console.log(`\n✅ Found ${images.length} images:\n`);
 

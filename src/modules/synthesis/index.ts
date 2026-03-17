@@ -1,10 +1,10 @@
 /**
  * Synthesis Module
  *
- * Generates Medium-style articles using Claude AI.
+ * Generates Medium-style articles using OpenAI GPT-4o.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { marked } from 'marked';
 import { artistOps, sourceOps, draftOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
@@ -18,10 +18,10 @@ export interface ArticleStructure {
 }
 
 export class SynthesisModule {
-  private client: Anthropic;
+  private client: OpenAI;
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new OpenAI({ apiKey });
   }
 
   /**
@@ -109,15 +109,18 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       .replace('{{artist_context}}', artistContext)
       .replace('{{source_context}}', sourceContext);
 
-    console.log(`  Calling Claude API...`);
+    console.log(`  Calling OpenAI API (gpt-4o)...`);
 
     try {
-      const response = await this.client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o',
         max_tokens: 4096,
         temperature: 0.7,
-        system: prompt.system,
         messages: [
+          {
+            role: 'system',
+            content: prompt.system,
+          },
           {
             role: 'user',
             content: userPrompt,
@@ -125,15 +128,15 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
         ],
       });
 
-      const content = response.content[0];
-      if (content.type !== 'text') {
-        throw new Error('Unexpected response type from Claude');
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('Empty response from OpenAI');
       }
 
       // Parse response
-      return this.parseArticleResponse(content.text);
+      return this.parseArticleResponse(content);
     } catch (error) {
-      console.error('Claude API error:', error);
+      console.error('OpenAI API error:', error);
       throw new Error(
         `Failed to generate article: ${error instanceof Error ? error.message : String(error)}`
       );

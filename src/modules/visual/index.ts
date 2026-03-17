@@ -1,125 +1,343 @@
 /**
  * Visual Materials Module
  *
- * Sources and manages images for articles from Wikimedia Commons and institutional sources.
+ * Sources and manages images for articles using a 3-layer verification pipeline:
+ * 1. Extract from verified sources (highest confidence)
+ * 2. Wikimedia Commons + Claude Vision verification
+ * 3. Web search + Claude Vision verification
  */
 
+import OpenAI from 'openai';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
-import type { Image, WikimediaImage } from '../../types/index.js';
+import type { Image, Source, WikimediaImage } from '../../types/index.js';
+import { ScraperBridge } from '../scraper-bridge/index.js';
+
+interface ArtistInfo {
+  full_name: string;
+  visual_practice?: string;
+  birthplace_city?: string;
+  birthplace_state?: string;
+}
 
 export class VisualModule {
   private readonly imagesDir: string;
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
-  private readonly unsplashApiBase = 'https://api.unsplash.com';
+  private readonly scraperBridge: ScraperBridge;
+  private readonly openai: OpenAI;
 
-  constructor(imagesDir = './data/images') {
+  constructor(openaiApiKey: string, imagesDir = './data/images') {
     this.imagesDir = imagesDir;
+    this.scraperBridge = new ScraperBridge();
+    this.openai = new OpenAI({ apiKey: openaiApiKey });
     this.ensureImagesDir();
   }
 
   /**
-   * Source images for an artist
+   * Source images for an artist using 3-layer verification pipeline.
    */
-  async sourceImages(artistName: string, draftId: number, maxImages = 3): Promise<Image[]> {
-    console.log(`\n🖼️  Sourcing images for ${artistName}...`);
+  async sourceImages(
+    artist: ArtistInfo,
+    sources: Source[],
+    _draftId: number,
+    maxImages = 3
+  ): Promise<Image[]> {
+    console.log(`\n🖼️  Sourcing verified images for ${artist.full_name}...`);
 
     const images: Image[] = [];
-    // Request more images than needed to account for download failures
-    const searchLimit = maxImages * 2;
 
-    try {
-      // Try Wikimedia Commons first
-      const wikimediaImages = await this.searchWikimedia(artistName, searchLimit);
-      console.log(`  Found ${wikimediaImages.length} Wikimedia images`);
+    // Layer 1: Extract from verified sources (no Claude verification needed)
+    await this.extractFromVerifiedSources(artist, sources, images, maxImages);
 
-      if (wikimediaImages.length > 0) {
-        // Download Wikimedia images
-        for (const wikiImage of wikimediaImages) {
-          try {
-            images.push({
-              url: wikiImage.url,
-              caption: wikiImage.description ?? `Artwork by ${artistName}`,
-              attribution: this.generateAttribution(wikiImage),
-            });
-            console.log(`  ✓ Added Wikimedia image`);
-          } catch (error) {
-            console.warn(`  ✗ Failed to process image:`, error);
-          }
-        }
-      }
-
-      // If no Wikimedia images, try multiple sources
-      if (images.length === 0) {
-        // Try source 1: Bing Images (more permissive)
-        console.log(`  Searching Bing Images for ${artistName}'s artwork...`);
-        const bingImages = await this.searchBingImages(artistName, searchLimit);
-        console.log(`  Found ${bingImages.length} Bing Images`);
-
-        for (const bingImage of bingImages) {
-          images.push({
-            url: bingImage.url,
-            caption: bingImage.caption,
-            attribution: bingImage.attribution,
-          });
-        }
-
-        // If still not enough, try DuckDuckGo
-        if (images.length < searchLimit) {
-          console.log(`  Searching DuckDuckGo for ${artistName}'s artwork...`);
-          const ddgImages = await this.searchDuckDuckGoImages(
-            artistName,
-            searchLimit - images.length
-          );
-          console.log(`  Found ${ddgImages.length} DuckDuckGo Images`);
-
-          for (const ddgImage of ddgImages) {
-            images.push({
-              url: ddgImage.url,
-              caption: ddgImage.caption,
-              attribution: ddgImage.attribution,
-            });
-          }
-        }
-
-        // Fallback: Google Images as last resort
-        if (images.length < searchLimit) {
-          console.log(`  Searching Google Images for ${artistName}'s artwork...`);
-          const googleImages = await this.searchGoogleImages(
-            artistName,
-            searchLimit - images.length
-          );
-          console.log(`  Found ${googleImages.length} Google Images`);
-
-          for (const googleImage of googleImages) {
-            images.push({
-              url: googleImage.url,
-              caption: googleImage.caption,
-              attribution: googleImage.attribution,
-            });
-          }
-        }
-      }
-
-      console.log(`  ✓ Sourced ${images.length} images total`);
-    } catch (error) {
-      console.error('Error sourcing images:', error);
+    // Layer 2: Wikimedia Commons + Claude Vision
+    if (images.length < maxImages) {
+      await this.searchWikimediaVerified(artist, images, maxImages);
     }
 
+    // Layer 3: Web search + Claude Vision
+    if (images.length < maxImages) {
+      await this.searchWebVerified(artist, images, maxImages);
+    }
+
+    console.log(`  ✓ Sourced ${images.length} verified images total`);
     return images;
   }
 
   /**
-   * Search Wikimedia Commons for artist images
+   * Layer 1: Extract images directly from verified source pages.
    */
-  private async searchWikimedia(artistName: string, limit: number): Promise<WikimediaImage[]> {
+  private async extractFromVerifiedSources(
+    artist: ArtistInfo,
+    sources: Source[],
+    images: Image[],
+    maxImages: number
+  ): Promise<void> {
+    const scraperAvailable = await this.scraperBridge.isAvailable();
+    if (!scraperAvailable) {
+      console.log('  Scrapling not available — skipping source extraction');
+      return;
+    }
+
+    // Sort by credibility_score descending
+    const sortedSources = [...sources].sort(
+      (a, b) => (b.credibility_score ?? 0) - (a.credibility_score ?? 0)
+    );
+
+    for (const source of sortedSources) {
+      if (images.length >= maxImages) break;
+
+      try {
+        console.log(`  Extracting images from ${source.institution}: ${source.url}`);
+        const result = await this.scraperBridge.extractImages(source.url, 200, maxImages - images.length);
+
+        if (result.success && result.images.length > 0) {
+          for (const img of result.images) {
+            if (images.length >= maxImages) break;
+            // Even verified sources need quality check (could be banners/thumbnails)
+            const quality = await this.verifyImageWithClaude(img.url, artist);
+            if (quality.verified) {
+              images.push({
+                url: img.url,
+                caption: img.alt || `Artwork by ${artist.full_name}`,
+                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
+              });
+              console.log(`  ✓ Added verified image from ${source.institution}: ${quality.reason}`);
+            } else {
+              console.log(`  ✗ Rejected from ${source.institution}: ${quality.reason}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`  ✗ Failed to extract from ${source.url}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Layer 2: Search Wikimedia Commons, verify with Claude Vision.
+   */
+  private async searchWikimediaVerified(
+    artist: ArtistInfo,
+    images: Image[],
+    maxImages: number
+  ): Promise<void> {
+    const query = this.buildSearchQuery(artist);
+    console.log(`  Searching Wikimedia: "${query}"`);
+
+    const wikimediaImages = await this.searchWikimedia(query, (maxImages - images.length) * 2);
+    console.log(`  Found ${wikimediaImages.length} Wikimedia candidates`);
+
+    for (const wikiImage of wikimediaImages) {
+      if (images.length >= maxImages) break;
+
+      const verification = await this.verifyImageWithClaude(wikiImage.url, artist);
+      if (verification.verified) {
+        images.push({
+          url: wikiImage.url,
+          caption: wikiImage.description ?? `Artwork by ${artist.full_name}`,
+          attribution: this.generateAttribution(wikiImage),
+        });
+        console.log(`  ✓ Wikimedia image verified: ${verification.reason}`);
+      } else {
+        console.log(`  ✗ Wikimedia image rejected: ${verification.reason}`);
+      }
+    }
+  }
+
+  /**
+   * Layer 3: Web search via Scrapling, verify with Claude Vision.
+   */
+  private async searchWebVerified(
+    artist: ArtistInfo,
+    images: Image[],
+    maxImages: number
+  ): Promise<void> {
+    const scraperAvailable = await this.scraperBridge.isAvailable();
+    if (!scraperAvailable) {
+      console.log('  Scrapling not available — skipping web search');
+      return;
+    }
+
+    const query = this.buildSearchQuery(artist);
+    console.log(`  Searching web: "${query}"`);
+
+    const searchResult = await this.scraperBridge.searchImages(query, 'all', (maxImages - images.length) * 2);
+
+    if (!searchResult.success || searchResult.images.length === 0) {
+      console.log('  No web search results');
+      return;
+    }
+
+    console.log(`  Found ${searchResult.images.length} web search candidates`);
+
+    for (const img of searchResult.images) {
+      if (images.length >= maxImages) break;
+
+      const verification = await this.verifyImageWithClaude(img.url, artist);
+      if (verification.verified) {
+        images.push({
+          url: img.url,
+          caption: img.caption || `Artwork by ${artist.full_name}`,
+          attribution: `Verified via Claude Vision. Educational use.`,
+        });
+        console.log(`  ✓ Web image verified: ${verification.reason}`);
+      } else {
+        console.log(`  ✗ Web image rejected: ${verification.reason}`);
+      }
+    }
+  }
+
+  /**
+   * Verify an image belongs to the artist using OpenAI Vision (GPT-4o).
+   * Fail-safe: on error, rejects the image.
+   */
+  private async verifyImageWithClaude(
+    imageUrl: string,
+    artist: ArtistInfo
+  ): Promise<{ verified: boolean; reason: string }> {
+    try {
+      // Download image as base64
+      const imageData = await this.downloadImageAsBase64(imageUrl);
+      if (!imageData) {
+        return { verified: false, reason: 'Could not download image for verification' };
+      }
+
+      const practiceInfo = artist.visual_practice ? ` Their artistic practice: ${artist.visual_practice}.` : '';
+      const locationInfo = artist.birthplace_city
+        ? ` Based in ${artist.birthplace_city}${artist.birthplace_state ? `, ${artist.birthplace_state}` : ''}.`
+        : '';
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: 200,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${imageData.mediaType};base64,${imageData.base64}`,
+                },
+              },
+              {
+                type: 'text',
+                text: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
+
+Answer with a JSON object: {"verified": true/false, "reason": "brief explanation"}
+
+Verify ALL of these criteria (reject if ANY fails):
+1. ARTWORK: This must be an artwork (painting, print, woodcut print, etc.), not a photo of a person, UI element, logo, or banner.
+2. PAPER PRINT ONLY — NOT A PHYSICAL OBJECT: Look carefully at the image. Ask yourself: "Am I looking at ink on paper, or a photo of a 3D object?"
+   - ACCEPT: A print on paper (ink transferred from a woodblock to paper). The background should be the paper itself (white, cream, off-white). The image looks flat, like a scan or a straight-on photo of paper.
+   - REJECT if ANY of these are true:
+     * The image shows a carved wooden block or matrix (you can see wood grain, the carving is recessed into wood, the medium is WOOD not paper)
+     * There is a gray, colored, or gradient background BEHIND the artwork (this means it's a photo of a physical object, not a scan of a print)
+     * There are visible shadows cast by the artwork (means it's a 3D object being photographed)
+     * The artwork appears to float or have depth/perspective (mockup or framed piece)
+     * You can see a frame, wall, gallery, or room around the artwork
+     * The edges of the artwork look like a thick physical object rather than a flat sheet of paper
+   For woodcut/xilogravura artists: we want the PRINTED RESULT on paper, NOT the carved wooden block.
+3. ATTRIBUTION: The artwork style must plausibly match the artist. If you can't confirm, reject.
+4. FILLS THE FRAME — NO WIDE BORDERS: The artwork must fill at least 90% of the image area. REJECT if ANY of these are true:
+     * The artwork is centered on a sheet of paper with obvious wide white/blank margins around it (more than ~5% of the image on any side)
+     * There is handwriting, a signature, numbering (like "2/10"), or text below/above the artwork
+     * The artwork is small and "floating" within a much larger blank image
+   A thin sliver of paper edge or minimal texture at the border is OK — what matters is that the artwork dominates the image. Close-up crops that fill the frame are ideal.
+5. COMPLETE: The artwork should show ONE piece, not a collage of multiple works or a tiny thumbnail.
+6. HIGH RESOLUTION AND SHARP: The image must be crisp with clearly visible fine details and textures. REJECT if the image looks soft, fuzzy, compressed, low-resolution, or if you cannot make out fine lines and details clearly.
+
+When in doubt on any criterion, say false.`,
+              },
+            ],
+          },
+        ],
+      });
+
+      const text = response.choices[0]?.message?.content || '';
+      const jsonMatch = text.match(/\{[^}]+\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          verified: parsed.verified === true,
+          reason: parsed.reason || 'No reason given',
+        };
+      }
+
+      return { verified: false, reason: 'Could not parse verification response' };
+    } catch (error) {
+      console.warn(`  OpenAI Vision verification failed for ${imageUrl}:`, error);
+      return { verified: false, reason: 'Verification error — rejected for safety' };
+    }
+  }
+
+  /**
+   * Download an image and return as base64 with media type.
+   */
+  private async downloadImageAsBase64(
+    url: string
+  ): Promise<{ base64: string; mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' } | null> {
+    try {
+      const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        },
+      });
+
+      // Reject small files (< 50KB — likely low-res, thumbnails, or icons)
+      const buffer = Buffer.from(response.data);
+      if (buffer.length < 50_000) {
+        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 50KB)`);
+        return null;
+      }
+
+      const contentType = response.headers['content-type'] || '';
+      let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg';
+      if (contentType.includes('png')) mediaType = 'image/png';
+      else if (contentType.includes('gif')) mediaType = 'image/gif';
+      else if (contentType.includes('webp')) mediaType = 'image/webp';
+
+      const base64 = buffer.toString('base64');
+      return { base64, mediaType };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Build a specific search query using artist details instead of generic terms.
+   */
+  private buildSearchQuery(artist: ArtistInfo): string {
+    const parts = [artist.full_name];
+
+    if (artist.visual_practice) {
+      parts.push(artist.visual_practice);
+    } else {
+      parts.push('artwork');
+    }
+
+    if (artist.birthplace_state) {
+      parts.push(artist.birthplace_state);
+    } else if (artist.birthplace_city) {
+      parts.push(artist.birthplace_city);
+    }
+
+    return parts.join(' ');
+  }
+
+  /**
+   * Search Wikimedia Commons for artist images.
+   */
+  private async searchWikimedia(query: string, limit: number): Promise<WikimediaImage[]> {
     try {
       const params = new URLSearchParams({
         action: 'query',
         format: 'json',
         generator: 'search',
-        gsrsearch: `${artistName} artwork OR painting OR sculpture`,
+        gsrsearch: query,
         gsrlimit: String(Math.min(limit * 2, 10)),
         prop: 'imageinfo',
         iiprop: 'url|extmetadata',
@@ -164,25 +382,7 @@ export class VisualModule {
   }
 
   /**
-   * Download image to local storage
-   */
-  private async downloadImage(url: string, draftId: number): Promise<string> {
-    const ext = path.extname(new URL(url).pathname) || '.jpg';
-    const filename = `draft-${draftId}-${Date.now()}${ext}`;
-    const filepath = path.join(this.imagesDir, filename);
-
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-
-    fs.writeFileSync(filepath, response.data);
-
-    return filepath;
-  }
-
-  /**
-   * Generate proper attribution text
+   * Generate proper attribution text for Wikimedia images.
    */
   private generateAttribution(image: WikimediaImage): string {
     const parts: string[] = [];
@@ -201,7 +401,7 @@ export class VisualModule {
   }
 
   /**
-   * Clean HTML from metadata
+   * Clean HTML from metadata.
    */
   private cleanHtml(text: string): string {
     return text
@@ -215,7 +415,7 @@ export class VisualModule {
   }
 
   /**
-   * Ensure images directory exists
+   * Ensure images directory exists.
    */
   private ensureImagesDir(): void {
     if (!fs.existsSync(this.imagesDir)) {
@@ -224,7 +424,7 @@ export class VisualModule {
   }
 
   /**
-   * Get image as base64 for email embedding
+   * Get image as base64 for email embedding.
    */
   getImageBase64(filepath: string): string {
     const buffer = fs.readFileSync(filepath);
@@ -232,7 +432,7 @@ export class VisualModule {
   }
 
   /**
-   * Get image mime type
+   * Get image mime type.
    */
   getImageMimeType(filepath: string): string {
     const ext = path.extname(filepath).toLowerCase();
@@ -244,231 +444,5 @@ export class VisualModule {
       '.webp': 'image/webp',
     };
     return mimeTypes[ext] || 'image/jpeg';
-  }
-
-  /**
-   * Search Google Images for artist's artwork via scraping
-   */
-  private async searchGoogleImages(
-    artistName: string,
-    limit: number
-  ): Promise<Array<{ url: string; caption: string; attribution: string }>> {
-    try {
-      // First try curated database
-      const curatedArtistImages = await this.getCuratedArtistImages(artistName);
-      if (curatedArtistImages.length > 0) {
-        return curatedArtistImages.slice(0, limit);
-      }
-
-      // If not in database, scrape Google Images
-      console.log(`  Scraping Google Images for ${artistName}...`);
-      const query = encodeURIComponent(`${artistName} painting artwork`);
-      const searchUrl = `https://www.google.com/search?q=${query}&tbm=isch&num=50`;
-
-      const response = await axios.get(searchUrl, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-        timeout: 10000,
-      });
-
-      // Extract image URLs from the HTML
-      const html = response.data as string;
-      const imageUrls = this.extractImageUrlsFromGoogleHtml(html, limit * 2);
-
-      if (imageUrls.length > 0) {
-        return imageUrls.map((url, idx) => ({
-          url,
-          caption: `Artwork by ${artistName}`,
-          attribution: `Image from Google Images search. Educational use.`,
-        }));
-      }
-
-      console.warn(`  No images found via scraping for ${artistName}`);
-      return [];
-    } catch (error) {
-      console.error('Google Images scraping failed:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Extract image URLs from Google Images HTML
-   */
-  private extractImageUrlsFromGoogleHtml(html: string, limit: number): string[] {
-    const urls: string[] = [];
-
-    // Google Images stores image URLs in various formats
-    // Pattern 1: Look for direct image URLs in the HTML
-    const urlPattern1 = /"(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/gi;
-    const matches1 = html.matchAll(urlPattern1);
-
-    for (const match of matches1) {
-      let url = match[1];
-      // Decode unicode escapes (e.g., \u003d to =)
-      url = url.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) =>
-        String.fromCharCode(parseInt(code, 16))
-      );
-      // Filter out small icons and Google's own images
-      if (
-        !url.includes('google.com/images') &&
-        !url.includes('gstatic.com') &&
-        !url.includes('googleusercontent.com') &&
-        url.length > 50
-      ) {
-        urls.push(url);
-        if (urls.length >= limit) break;
-      }
-    }
-
-    // If not enough URLs found, try alternative pattern
-    if (urls.length < limit) {
-      const urlPattern2 = /\["(https:\/\/[^"]+)","(\d+)","(\d+)"\]/g;
-      const matches2 = html.matchAll(urlPattern2);
-
-      for (const match of matches2) {
-        let url = match[1];
-        const width = parseInt(match[2]);
-        const height = parseInt(match[3]);
-
-        // Decode unicode escapes
-        url = url.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) =>
-          String.fromCharCode(parseInt(code, 16))
-        );
-
-        // Only get reasonably sized images
-        if (width > 300 && height > 300 && !urls.includes(url)) {
-          urls.push(url);
-          if (urls.length >= limit) break;
-        }
-      }
-    }
-
-    return [...new Set(urls)].slice(0, limit);
-  }
-
-  /**
-   * Get curated images from known museum sources for specific artists
-   */
-  private async getCuratedArtistImages(
-    artistName: string
-  ): Promise<Array<{ url: string; caption: string; attribution: string }>> {
-    // Database of known Brazilian artists with publicly accessible image URLs
-    // These URLs are from public domain or fair use sources
-    const artistDatabase: Record<
-      string,
-      Array<{ url: string; title: string; source: string }>
-    > = {
-      // Curated database currently empty - relying on web scraping for now
-      // TODO: Add verified museum URLs when found
-    };
-
-    const normalizedName = artistName.trim();
-
-    if (artistDatabase[normalizedName]) {
-      return artistDatabase[normalizedName].map((artwork) => ({
-        url: artwork.url,
-        caption: `"${artwork.title}" by ${artistName}`,
-        attribution: `Image source: ${artwork.source}. Fair use for educational purposes.`,
-      }));
-    }
-
-    // If artist not in database, return empty to trigger image search
-    return [];
-  }
-
-  /**
-   * Search Bing Images for artist's artwork
-   */
-  private async searchBingImages(
-    artistName: string,
-    limit: number
-  ): Promise<Array<{ url: string; caption: string; attribution: string }>> {
-    try {
-      const query = encodeURIComponent(`${artistName} painting artwork`);
-      const searchUrl = `https://www.bing.com/images/search?q=${query}&form=HDRSC2`;
-
-      const response = await axios.get(searchUrl, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-        timeout: 10000,
-      });
-
-      const html = response.data as string;
-
-      // Extract image URLs from Bing's HTML
-      const urls: string[] = [];
-      const urlPattern = /"murl":"([^"]+)"/g;
-      const matches = html.matchAll(urlPattern);
-
-      for (const match of matches) {
-        const url = match[1];
-        if (url && url.startsWith('http') && !urls.includes(url)) {
-          urls.push(url);
-          if (urls.length >= limit) break;
-        }
-      }
-
-      return urls.map((url, idx) => ({
-        url,
-        caption: `Artwork by ${artistName} (${idx + 1})`,
-        attribution: `Image from Bing Images search. Educational use.`,
-      }));
-    } catch (error) {
-      console.warn('Bing Images search failed:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Search DuckDuckGo Images for artist's artwork
-   */
-  private async searchDuckDuckGoImages(
-    artistName: string,
-    limit: number
-  ): Promise<Array<{ url: string; caption: string; attribution: string }>> {
-    try {
-      const query = encodeURIComponent(`${artistName} painting artwork`);
-      const searchUrl = `https://duckduckgo.com/?q=${query}&iax=images&ia=images`;
-
-      const response = await axios.get(searchUrl, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-        timeout: 10000,
-      });
-
-      const html = response.data as string;
-
-      // Extract image URLs
-      const urls: string[] = [];
-      const urlPattern = /"image":"([^"]+)"/g;
-      const matches = html.matchAll(urlPattern);
-
-      for (const match of matches) {
-        let url = match[1];
-        url = url.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) =>
-          String.fromCharCode(parseInt(code, 16))
-        );
-
-        if (url && url.startsWith('http') && !urls.includes(url)) {
-          urls.push(url);
-          if (urls.length >= limit) break;
-        }
-      }
-
-      return urls.map((url, idx) => ({
-        url,
-        caption: `Artwork by ${artistName} (${idx + 1})`,
-        attribution: `Image from DuckDuckGo Images. Educational use.`,
-      }));
-    } catch (error) {
-      console.warn('DuckDuckGo Images search failed:', error);
-      return [];
-    }
   }
 }

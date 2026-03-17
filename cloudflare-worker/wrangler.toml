@@ -1,11 +1,8 @@
 name = "casca-email-worker"
 main = "email-worker.js"
 compatibility_date = "2024-01-01"
+account_id = "0353dcdbc37e77a65930fa7a4089d7d7"
 
-# Email Worker Configuration
-[email]
-# This will be configured in Cloudflare Dashboard
-
-# Environment Variables (set in Cloudflare Dashboard)
-# VERCEL_WEBHOOK_URL = "https://casca-automation-blog.vercel.app/api/webhook/email"
-# WEBHOOK_SECRET = "your-webhook-secret"
+[vars]
+VERCEL_WEBHOOK_URL = "https://casca-automation-blog.vercel.app/api/webhook/email"
+WEBHOOK_SECRET = "f9c7a2d4b1e84e6fb0a9c3d7e5a1c8f2-9a4e6b7d2c0f1e8a5b3d7c9e4f6"

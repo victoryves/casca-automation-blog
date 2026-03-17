@@ -40,5 +40,9 @@ temp/
 # Images
 data/images/
 
+# Python virtual environment
+scrapers/.venv/
+
 # Vercel
 .vercel
+.env*.local

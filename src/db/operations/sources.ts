@@ -165,6 +165,22 @@ export const sourceOps = {
   },
 
   /**
+   * Update source content summary
+   */
+  async updateContentSummary(id: number, content: string): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('sources')
+      .update({ content_summary: content })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to update source content summary: ${error.message}`);
+    }
+  },
+
+  /**
    * Delete source
    */
   async delete(id: number): Promise<void> {

@@ -21,12 +21,16 @@ export class Logger {
   }
 
   private ensureLogDir(): void {
-    const dirs = [this.logDir, path.join(this.logDir, 'daily'), path.join(this.logDir, 'errors')];
+    try {
+      const dirs = [this.logDir, path.join(this.logDir, 'daily'), path.join(this.logDir, 'errors')];
 
-    for (const dir of dirs) {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+      for (const dir of dirs) {
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
       }
+    } catch {
+      // Silently ignore on read-only filesystems (e.g., Vercel)
     }
   }
 
@@ -44,8 +48,12 @@ export class Logger {
   }
 
   private writeToFile(filename: string, content: string): void {
-    const filepath = path.join(this.logDir, filename);
-    fs.appendFileSync(filepath, content + '\n', 'utf-8');
+    try {
+      const filepath = path.join(this.logDir, filename);
+      fs.appendFileSync(filepath, content + '\n', 'utf-8');
+    } catch {
+      // Silently ignore on read-only filesystems (e.g., Vercel)
+    }
   }
 
   debug(message: string, meta?: unknown): void {

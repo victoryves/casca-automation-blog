@@ -22,9 +22,14 @@ async function resend() {
   console.log(`📄 Draft: ${draft.title}\n`);
 
   // Source fresh images
-  const visualModule = new VisualModule();
+  const visualModule = new VisualModule(config.env.anthropicApiKey);
   console.log('🖼️  Sourcing images...');
-  const images = await visualModule.sourceImages('Francisco Brennand', 17, 6);
+  const images = await visualModule.sourceImages(
+    { full_name: 'Francisco Brennand' },
+    [],
+    17,
+    6
+  );
   console.log(`  ✓ Found ${images.length} images\n`);
 
   // Send email

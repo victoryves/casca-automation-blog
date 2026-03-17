@@ -2,49 +2,50 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Unique identifier for this agent -->
     <key>Label</key>
     <string>com.casca.daily-workflow</string>
 
-    <!-- Program to run -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blog/scripts/run-daily-wrapper.sh</string>
+        <string>/bin/bash</string>
+        <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/scripts/run-daily-wrapper.sh</string>
     </array>
 
-    <!-- Working directory -->
     <key>WorkingDirectory</key>
-    <string>/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blog</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog</string>
 
-    <!-- Run at midnight (00:00) every day -->
+    <!-- Run daily at 8:00 AM -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>0</integer>
+        <integer>8</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
 
-    <!-- Keep the agent loaded -->
+    <!-- Run on load too (catches missed runs after sleep/reboot) -->
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 
-    <!-- Restart if it crashes -->
     <key>KeepAlive</key>
     <false/>
 
-    <!-- Standard output and error logging -->
+    <!-- 10 min timeout -->
+    <key>TimeOut</key>
+    <integer>600</integer>
+
     <key>StandardOutPath</key>
-    <string>/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stdout.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/vicyves1/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stderr.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stderr.log</string>
 
-    <!-- Environment variables -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/victoryves</string>
     </dict>
 </dict>
 </plist>

@@ -22,9 +22,9 @@ export default {
         emailBody += decoder.decode(value, { stream: true });
       }
 
-      // Simple text extraction (look for "poste" in the body)
+      // Simple text extraction (look for "poste" or "publish" in the body)
       const bodyLower = emailBody.toLowerCase();
-      const hasApprovalKeyword = bodyLower.includes('poste');
+      const hasApprovalKeyword = /\b(poste|publish)\b/.test(bodyLower);
 
       console.log('Has approval keyword:', hasApprovalKeyword);
 

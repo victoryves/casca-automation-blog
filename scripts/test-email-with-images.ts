@@ -20,9 +20,14 @@ async function testEmail() {
 
   try {
     // Source images
-    const visualModule = new VisualModule();
+    const visualModule = new VisualModule(config.env.anthropicApiKey);
     console.log('📸 Sourcing images...');
-    const images = await visualModule.sourceImages('Cícero Dias', 999, 3);
+    const images = await visualModule.sourceImages(
+      { full_name: 'Cícero Dias', visual_practice: 'pintura' },
+      [],
+      999,
+      3
+    );
     console.log(`  ✓ Found ${images.length} images\n`);
 
     // Send email

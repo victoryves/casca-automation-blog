@@ -63,10 +63,11 @@ export class EmailModule {
       }
 
       // Generate email template with only successful images
-      const template = await this.generateApprovalTemplate(draft, artist.full_name, successfulImages, sources);
+      const template = await this.generateApprovalTemplate(draft, artist.full_name, successfulImages, sources, options.draftId);
 
       const result = await this.client.emails.send({
         from: config.env.fromEmail,
+        replyTo: 'approve@casca-archive.org',
         to: config.env.approvalEmail,
         subject: template.subject,
         html: template.html,
@@ -106,7 +107,8 @@ export class EmailModule {
     draft: Draft,
     artistName: string,
     images?: Image[],
-    sources?: any[]
+    sources?: any[],
+    draftId?: number
   ): Promise<EmailTemplate> {
     // Configure marked for better paragraph handling
     marked.setOptions({
@@ -281,19 +283,20 @@ export class EmailModule {
     <div class="approval-section">
       <h3>📝 Article Ready for Review</h3>
       <p>This article about <strong>${artistName}</strong> is ready to publish.</p>
-      <p style="font-size: 1.2em; margin: 20px 0;"><strong>Option 1: Quick Approval via OpenClaw</strong></p>
-      <p>Send this command to your OpenClaw Agent:</p>
-      <div class="approval-code" style="background-color: #1a1a1a; color: #00ff00; padding: 15px 20px; font-family: 'Monaco', 'Courier New', monospace; font-size: 1.15em; cursor: pointer; user-select: all;">
-cd ~/casca-automation-blog && npm run publish
-      </div>
-      <p style="font-size: 0.95em; color: #666; margin-top: 10px;">
-        Copy the command above and paste it in OpenClaw chat.<br>
-        <strong>Context for OpenClaw:</strong> This publishes the CASCA blog article to Hashnode.<br>
-        The article will be published immediately.
+      <p style="margin: 25px 0;">
+        <a href="${this.buildApproveUrl(draftId)}"
+           style="background-color: #000; color: #fff; padding: 16px 40px; font-family: 'Courier New', monospace; font-size: 1.2em; font-weight: bold; text-decoration: none; border-radius: 4px; display: inline-block;">
+          PUBLICAR ARTIGO
+        </a>
       </p>
-      <p style="font-size: 1.2em; margin: 30px 0 10px 0;"><strong>Option 2: Manual Approval</strong></p>
-      <p style="font-size: 0.95em; color: #666;">
-        Or reply to this email with the exact word "poste" (not yet automated).
+      <p style="margin: 15px 0;">
+        <a href="${this.buildRejectUrl(draftId)}"
+           style="background-color: #fff; color: #cc0000; padding: 14px 36px; font-family: 'Courier New', monospace; font-size: 1em; font-weight: bold; text-decoration: none; border-radius: 4px; display: inline-block; border: 2px solid #cc0000;">
+          REJEITAR — BUSCAR OUTRO ARTISTA
+        </a>
+      </p>
+      <p style="font-size: 0.85em; color: #888; margin-top: 10px;">
+        Publicar envia para o Hashnode. Rejeitar busca um novo artista e envia outro email.
       </p>
     </div>
 
@@ -382,10 +385,25 @@ cd ~/casca-automation-blog && npm run publish
   /**
    * Parse inbound email for approval
    */
+  /**
+   * Build one-click approval URL
+   */
+  private buildApproveUrl(draftId?: number): string {
+    const config = getConfig();
+    const baseUrl = config.env.vercelUrl || 'https://casca-automation-blog.vercel.app';
+    return `${baseUrl}/api/webhook/approve?draft=${draftId}&token=${config.env.webhookSecret}`;
+  }
+
+  private buildRejectUrl(draftId?: number): string {
+    const config = getConfig();
+    const baseUrl = config.env.vercelUrl || 'https://casca-automation-blog.vercel.app';
+    return `${baseUrl}/api/webhook/reject?draft=${draftId}&token=${config.env.webhookSecret}`;
+  }
+
   parseApprovalReply(emailBody: string): boolean {
-    // Check for exact word "poste"
+    // Check for approval keywords (Portuguese or English)
     const normalized = emailBody.toLowerCase().trim();
-    return normalized === 'poste' || normalized.includes('\nposte\n') || /\bposte\b/.test(normalized);
+    return /\b(poste|publish)\b/.test(normalized);
   }
 
   /**
