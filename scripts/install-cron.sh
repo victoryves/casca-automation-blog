@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# CASCA Editorial Agent - Install Daily Cron Job
-# This script installs a launchd agent to run the daily workflow at midnight
+# CASCA Editorial Agent - Install Daily Scheduler
+# This script installs a launchd agent that retries hourly until one article is sent each day.
 
 set -e
 
-echo "🚀 Installing CASCA Editorial Agent daily scheduler..."
+echo "🚀 Installing CASCA Editorial Agent scheduler..."
 echo ""
 
 # Get the project directory (parent of scripts/)
@@ -31,7 +31,7 @@ mkdir -p "$LAUNCH_AGENTS_DIR"
 # Unload existing agent if it's already loaded
 if [ -f "$INSTALLED_PLIST" ]; then
     echo "🔄 Unloading existing agent..."
-    launchctl unload "$INSTALLED_PLIST" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)" "$INSTALLED_PLIST" 2>/dev/null || true
 fi
 
 # Copy plist file to LaunchAgents
@@ -43,12 +43,12 @@ chmod 644 "$INSTALLED_PLIST"
 
 # Load the agent
 echo "✅ Loading launch agent..."
-launchctl load "$INSTALLED_PLIST"
+launchctl bootstrap "gui/$(id -u)" "$INSTALLED_PLIST"
 
 echo ""
 echo "✅ Installation complete!"
 echo ""
-echo "📅 The CASCA Editorial Agent will now run daily at midnight (00:00)."
+echo "📅 The CASCA Editorial Agent will now retry every hour until one article is successfully sent for the local day."
 echo ""
 echo "📊 Useful commands:"
 echo ""
@@ -60,10 +60,10 @@ echo "  tail -f $PROJECT_DIR/logs/launchd-stdout.log"
 echo "  tail -f $PROJECT_DIR/logs/daily/\$(date +%Y-%m-%d).log"
 echo ""
 echo "  Unload (disable):"
-echo "  launchctl unload $INSTALLED_PLIST"
+echo "  launchctl bootout gui/\$(id -u) $INSTALLED_PLIST"
 echo ""
 echo "  Reload (after changes):"
-echo "  launchctl unload $INSTALLED_PLIST && launchctl load $INSTALLED_PLIST"
+echo "  launchctl bootout gui/\$(id -u) $INSTALLED_PLIST && launchctl bootstrap gui/\$(id -u) $INSTALLED_PLIST"
 echo ""
 echo "  Test run manually:"
 echo "  cd $PROJECT_DIR && npm run daily"

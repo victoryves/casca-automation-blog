@@ -174,7 +174,7 @@ export class DiscoveryModule {
   }): Promise<void> {
     const { config, maxCandidates, candidates, sourcesMap, errors, existingNames } = params;
 
-    const remainingSeeds = SEED_ARTISTS.filter(
+    const remainingSeeds = this.balanceSeedsAcrossCategories(SEED_ARTISTS).filter(
       (seed) => !existingNames.has(this.normalizeName(seed.name))
     );
 
@@ -274,6 +274,33 @@ export class DiscoveryModule {
       .filter(Boolean);
 
     return codes.map((code) => this.STATE_MAP[code] ?? code);
+  }
+
+  private balanceSeedsAcrossCategories(seeds: SeedArtist[]): SeedArtist[] {
+    const grouped = new Map<string, SeedArtist[]>();
+
+    for (const seed of seeds) {
+      const current = grouped.get(seed.category) ?? [];
+      current.push(seed);
+      grouped.set(seed.category, current);
+    }
+
+    const categories = Array.from(grouped.keys());
+    const balanced: SeedArtist[] = [];
+    let added = true;
+
+    while (added) {
+      added = false;
+      for (const category of categories) {
+        const queue = grouped.get(category);
+        if (queue && queue.length > 0) {
+          balanced.push(queue.shift()!);
+          added = true;
+        }
+      }
+    }
+
+    return balanced;
   }
 
   private buildSeedQueries(seed: SeedArtist, states: string[]): string[] {
@@ -389,15 +416,19 @@ export class DiscoveryModule {
     config: Config,
     limit: number
   ): Omit<Source, 'id' | 'artist_id'>[] {
-    const scored = results.map((result) => {
-      const credibility = this.estimateCredibility(result.url, result.score, config);
-      const matchBoost = this.matchScore(result, artistName);
-      return {
-        result,
-        credibility,
-        matchBoost,
-      };
-    });
+    const scored = results
+      .map((result) => {
+        const credibility = this.estimateCredibility(result.url, result.score, config);
+        const matchBoost = this.matchScore(result, artistName);
+        const strongMatch = this.isStrongArtistMatch(result, artistName);
+        return {
+          result,
+          credibility,
+          matchBoost,
+          strongMatch,
+        };
+      })
+      .filter((item) => item.strongMatch);
 
     scored.sort((a, b) => {
       if (b.credibility !== a.credibility) return b.credibility - a.credibility;
@@ -487,6 +518,34 @@ export class DiscoveryModule {
     }
 
     return hits / tokens.length;
+  }
+
+  private isStrongArtistMatch(result: TavilySearchResult, artistName: string): boolean {
+    const normalizedArtistName = this.normalizeName(artistName);
+    const normalizedHaystack = this.normalizeName(
+      `${result.title} ${result.content} ${result.url}`
+    );
+
+    if (normalizedHaystack.includes(normalizedArtistName)) {
+      return true;
+    }
+
+    const tokens = normalizedArtistName.split(' ').filter((token) => token.length >= 2);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    const surname = tokens[tokens.length - 1];
+    const givenTokens = tokens.slice(0, -1).filter((token) => token.length >= 4);
+
+    if (givenTokens.length === 0) {
+      return tokens.every((token) => normalizedHaystack.includes(token));
+    }
+
+    const hasGivenName = givenTokens.some((token) => normalizedHaystack.includes(token));
+    const hasSurname = surname.length >= 4 ? normalizedHaystack.includes(surname) : true;
+
+    return hasGivenName && hasSurname;
   }
 
   private normalizeName(name: string): string {

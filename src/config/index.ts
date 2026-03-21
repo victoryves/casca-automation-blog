@@ -51,6 +51,7 @@ export interface EnvConfig {
   appBaseUrl?: string;
   vercelUrl?: string;
   webhookSecret: string;
+  appTimezone?: string;
 
   // Logging
   logLevel: 'debug' | 'info' | 'warn' | 'error';
@@ -91,6 +92,7 @@ function loadEnvConfig(): EnvConfig {
     appBaseUrl: process.env.APP_BASE_URL,
     vercelUrl: process.env.VERCEL_URL,
     webhookSecret: process.env.WEBHOOK_SECRET!,
+    appTimezone: process.env.APP_TIMEZONE,
     logLevel: (process.env.LOG_LEVEL as EnvConfig['logLevel']) || 'info',
   };
 }

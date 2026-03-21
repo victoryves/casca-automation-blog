@@ -4,6 +4,7 @@
 
 import { getSupabase } from '../supabase.js';
 import type { Draft, DraftStatus, Image } from '../../types/index.js';
+import { getConfig } from '../../config/index.js';
 
 export const draftOps = {
   /**
@@ -118,20 +119,30 @@ export const draftOps = {
    */
   async emailSentToday(): Promise<boolean> {
     const supabase = getSupabase();
-    const today = new Date().toISOString().split('T')[0];
+    const timezone =
+      getConfig().env.appTimezone ||
+      Intl.DateTimeFormat().resolvedOptions().timeZone ||
+      'UTC';
+    const now = new Date();
+    const today = this.formatDateInTimezone(now, timezone);
+    const lookback = new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString();
 
-    const { count, error } = await supabase
+    const { data, error } = await supabase
       .from('drafts')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'sent')
-      .gte('sent_at', `${today}T00:00:00.000Z`)
-      .lt('sent_at', `${today}T23:59:59.999Z`);
+      .select('sent_at')
+      .in('status', ['sent', 'approved'])
+      .gte('sent_at', lookback)
+      .order('sent_at', { ascending: false })
+      .limit(20);
 
     if (error) {
       throw new Error(`Failed to check if email sent today: ${error.message}`);
     }
 
-    return (count ?? 0) > 0;
+    return (data ?? []).some((draft) => {
+      if (!draft.sent_at) return false;
+      return this.formatDateInTimezone(this.parseSupabaseTimestamp(draft.sent_at), timezone) === today;
+    });
   },
 
   /**
@@ -217,5 +228,21 @@ export const draftOps = {
     }
 
     return count ?? 0;
+  },
+
+  formatDateInTimezone(date: Date, timeZone: string): string {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+
+    return formatter.format(date);
+  },
+
+  parseSupabaseTimestamp(value: string): Date {
+    const normalized = /z$/i.test(value) || /[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`;
+    return new Date(normalized);
   },
 };

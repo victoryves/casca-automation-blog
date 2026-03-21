@@ -5,8 +5,8 @@
       "description": "Artists explicitly born in Northeast cities"
     },
     {
-      "query": "xilogravura artist \"J. Borges\" OR \"Gilvan Samico\" OR similar woodcut Northeast Brazil",
-      "description": "Woodcut artists (named examples)"
+      "query": "\"artista visual\" Nordeste Brasil pintura escultura fotografia instalação biografia",
+      "description": "Broad visual artists from Northeast Brazil across mediums"
     },
     {
       "query": "ceramista \"Mestre Vitalino\" OR similar Alto do Moura Caruaru pottery artist",
@@ -29,8 +29,8 @@
       "description": "Artist statements and bios"
     },
     {
-      "query": "gravurista brasileiro Nordeste xilogravura cordel popular art biography",
-      "description": "Brazilian printmakers and folk artists"
+      "query": "\"pintor\" OR \"fotógrafo\" OR \"escultor\" OR \"artista multimídia\" Nordeste Brasil biografia acervo",
+      "description": "Painters, photographers, sculptors, and mixed-media artists from the Northeast"
     },
     {
       "query": "photographer artist visual Bahia OR Pernambuco contemporary Brazilian photography",
@@ -39,6 +39,22 @@
     {
       "query": "pintor autodidata Nordeste Brasil arte naif primitiva biography",
       "description": "Self-taught and naive artists"
+    },
+    {
+      "query": "\"artista contemporâneo\" Nordeste Brasil instalação performance desenho pintura",
+      "description": "Contemporary artists working across installation, performance, drawing, and painting"
+    },
+    {
+      "query": "\"escultor\" OR \"ceramista\" OR \"gravador\" Nordeste Brasil museu coleção biografia",
+      "description": "Sculptors, ceramic artists, and printmakers from Northeast Brazil"
+    },
+    {
+      "query": "\"artista visual\" Bahia Pernambuco Ceará Maranhão Paraíba \"exposição\" \"biografia\"",
+      "description": "Regional exhibition and biography coverage across Northeast states"
+    },
+    {
+      "query": "xilogravura artista Nordeste Brasil biografia obras",
+      "description": "Woodcut artists from Northeast Brazil"
     }
   ]
 }

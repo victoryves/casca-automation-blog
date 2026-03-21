@@ -52,6 +52,11 @@ async function main(): Promise<void> {
     if (result.status === 'error') {
       process.exit(1);
     }
+
+    if (!options.dryRun && !result.email_sent) {
+      console.error('\n❌ Workflow completed without sending an approval email.');
+      process.exit(2);
+    }
   } catch (error) {
     console.error('\n❌ Fatal error:', error);
     process.exit(1);

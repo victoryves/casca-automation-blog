@@ -4,12 +4,13 @@
 # Runs the full workflow: discover → verify → synthesize → email
 # Never fails silently. Logs everything. Retries on transient errors.
 
-PROJECT_DIR="/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR" || { echo "FATAL: Cannot cd to $PROJECT_DIR"; exit 1; }
 
 # Setup PATH for homebrew + node
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export NODE_ENV=production
+export APP_TIMEZONE="${APP_TIMEZONE:-America/Toronto}"
 
 # Load nvm if available (don't fail if it doesn't exist)
 export NVM_DIR="$HOME/.nvm"
@@ -29,14 +30,28 @@ fi
 mkdir -p "$PROJECT_DIR/logs/daily"
 
 LOG_FILE="$PROJECT_DIR/logs/daily/$(date +%Y-%m-%d).log"
+LOCK_FILE="$PROJECT_DIR/logs/daily/run.lock"
 
 log() {
   echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+if [ -f "$LOCK_FILE" ]; then
+  EXISTING_PID="$(cat "$LOCK_FILE" 2>/dev/null)"
+  if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    log "Another run is already in progress (pid $EXISTING_PID). Exiting."
+    exit 0
+  fi
+  rm -f "$LOCK_FILE"
+fi
+
+echo $$ > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 log "========================================"
 log "CASCA Editorial Agent - Daily Run"
 log "Node: $(node --version) | npm: $(npm --version)"
+log "Timezone: $APP_TIMEZONE"
 log "========================================"
 
 # Retry logic: try up to 3 times with 60s between attempts
@@ -63,10 +78,5 @@ for attempt in $(seq 1 $MAX_RETRIES); do
 done
 
 log "ALL $MAX_RETRIES ATTEMPTS FAILED"
-
-# Send failure notification via curl to a simple webhook (optional, won't break if fails)
-# This ensures you know when the cron fails even if you don't check logs
-curl -s -X POST "https://casca-automation-blog.vercel.app/api/webhook/approve?draft=0&token=FAILURE_NOTIFICATION" \
-  > /dev/null 2>&1 || true
 
 exit 1

@@ -8,20 +8,15 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/scripts/run-daily-wrapper.sh</string>
+        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-daily-wrapper.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog</string>
+    <string>/Users/victoryves/casca-automation-blog-runner</string>
 
-    <!-- Run daily at 8:00 AM -->
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>8</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <!-- Retry hourly until one daily article is successfully sent -->
+    <key>StartInterval</key>
+    <integer>3600</integer>
 
     <!-- Run on load too (catches missed runs after sleep/reboot) -->
     <key>RunAtLoad</key>
@@ -30,15 +25,15 @@
     <key>KeepAlive</key>
     <false/>
 
-    <!-- 10 min timeout -->
+    <!-- Allow enough time for retries, scraping, and synthesis -->
     <key>TimeOut</key>
-    <integer>600</integer>
+    <integer>3600</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stdout.log</string>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stderr.log</string>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -46,6 +41,8 @@
         <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/victoryves</string>
+        <key>APP_TIMEZONE</key>
+        <string>America/Toronto</string>
     </dict>
 </dict>
 </plist>

@@ -15,6 +15,7 @@ import json
 import re
 import sys
 import traceback
+from typing import Dict, List, Optional
 from urllib.parse import urljoin
 
 
@@ -44,7 +45,7 @@ def is_likely_artwork(src: str, alt: str) -> bool:
     return True
 
 
-def has_acceptable_dimensions(width: int | None, height: int | None, min_width: int) -> bool:
+def has_acceptable_dimensions(width: Optional[int], height: Optional[int], min_width: int) -> bool:
     """Reject images that are too small or have extreme aspect ratios (banners/strips)."""
     if width is None or height is None:
         return True  # unknown dims — let Claude Vision decide later
@@ -56,7 +57,7 @@ def has_acceptable_dimensions(width: int | None, height: int | None, min_width: 
     return True
 
 
-def find_meta_content(page, property_name: str) -> str | None:
+def find_meta_content(page, property_name: str) -> Optional[str]:
     """Find a meta tag's content by property, using Scrapling's find()."""
     el = page.find(f'meta[property="{property_name}"]')
     if el:
@@ -68,7 +69,7 @@ def find_meta_content(page, property_name: str) -> str | None:
     return None
 
 
-def extract_from_instagram(page, url: str, max_images: int) -> list[dict]:
+def extract_from_instagram(page, url: str, max_images: int) -> List[Dict]:
     """Extract images from Instagram pages — prioritize og:image."""
     images = []
 
@@ -94,7 +95,7 @@ def extract_from_instagram(page, url: str, max_images: int) -> list[dict]:
     return images[:max_images]
 
 
-def extract_generic(page, url: str, min_width: int, max_images: int) -> list[dict]:
+def extract_generic(page, url: str, min_width: int, max_images: int) -> List[Dict]:
     """Extract images from a generic web page."""
     images = []
     seen_urls = set()

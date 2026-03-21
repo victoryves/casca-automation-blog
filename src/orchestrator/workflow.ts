@@ -40,7 +40,15 @@ export class WorkflowOrchestrator {
     this.logger.info('Starting daily workflow', options);
 
     const state: WorkflowState = {
-      date: new Date().toISOString().split('T')[0],
+      date: new Intl.DateTimeFormat('en-CA', {
+        timeZone:
+          this.config.env.appTimezone ||
+          Intl.DateTimeFormat().resolvedOptions().timeZone ||
+          'UTC',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date()),
       email_sent: false,
       status: 'idle',
       errors: [],
@@ -133,86 +141,89 @@ export class WorkflowOrchestrator {
         return state;
       }
 
-      // Step 6: Select artist (prioritize by discovery date)
-      const selectedArtist = verifiedArtists[0];
-      state.artist_id = selectedArtist.id;
-      this.logger.info(`Selected artist: ${selectedArtist.full_name} (ID: ${selectedArtist.id})`);
+      verifiedArtists = await this.rankArtistsForVariety(verifiedArtists);
 
-      // Step 6.5: Enrich sources with Scrapling (optional, non-fatal)
-      try {
-        const scraperBridge = new ScraperBridge();
-        if (await scraperBridge.isAvailable()) {
-          this.logger.info('Enriching sources with Scrapling');
-          const sources = await sourceOps.findByArtistId(selectedArtist.id!);
-          let enriched = 0;
+      let completed = false;
 
-          for (const source of sources) {
-            // Only enrich sources with short or missing content summaries
-            if (source.content_summary && source.content_summary.length >= 400) continue;
+      for (const selectedArtist of verifiedArtists) {
+        state.artist_id = selectedArtist.id;
+        this.logger.info(`Selected artist: ${selectedArtist.full_name} (ID: ${selectedArtist.id})`);
+        let currentDraftId: number | undefined;
 
+        try {
+          await this.enrichArtistSources(selectedArtist.id!);
+
+          this.logger.info('Starting article synthesis');
+          state.status = 'synthesizing';
+
+          const synthesisResult = await synthesis.synthesize(selectedArtist.id!);
+          currentDraftId = synthesisResult.draft.id;
+          state.draft_id = synthesisResult.draft.id;
+          this.logger.info('Article synthesized', synthesisResult.metadata);
+
+          this.logger.info('Sourcing verified images');
+          const artistSources = await sourceOps.findByArtistId(selectedArtist.id!);
+          const images = await visual.sourceImages(
+            {
+              full_name: selectedArtist.full_name,
+              visual_practice: selectedArtist.visual_practice ?? undefined,
+              birthplace_city: selectedArtist.birthplace_city ?? undefined,
+              birthplace_state: selectedArtist.birthplace_state ?? undefined,
+            },
+            artistSources,
+            synthesisResult.draft.id!,
+            3
+          );
+          this.logger.info(`Sourced ${images.length} verified images`);
+
+          if (images.length < 2) {
+            await draftOps.delete(synthesisResult.draft.id!);
+            await artistOps.updateStatus(selectedArtist.id!, 'published');
+            state.draft_id = undefined;
+            this.logger.warn(
+              `Skipping artist ${selectedArtist.id} because only ${images.length} verified pure artwork image(s) were found`
+            );
+            continue;
+          }
+
+          if (options.dryRun) {
+            this.logger.info('DRY RUN - Skipping email send');
+          } else {
+            this.logger.info('Sending approval email');
+            state.status = 'emailing';
+
+            await email.sendApprovalEmail({
+              draftId: synthesisResult.draft.id!,
+              images,
+            });
+
+            state.email_sent = true;
+            state.status = 'awaiting_approval';
+            this.logger.info('✓ Approval email sent successfully');
+          }
+
+          completed = true;
+          break;
+        } catch (artistError) {
+          if (currentDraftId) {
             try {
-              const result = await scraperBridge.fetchPage(source.url);
-              if (result.success && result.content && result.content.length > 100) {
-                await sourceOps.updateContentSummary(source.id!, result.content);
-                enriched++;
+              await draftOps.delete(currentDraftId);
+              if (state.draft_id === currentDraftId) {
+                state.draft_id = undefined;
               }
-            } catch (err) {
-              this.logger.warn(`Failed to enrich source ${source.id}`, err);
+            } catch (cleanupError) {
+              this.logger.warn(`Failed to clean up draft ${currentDraftId}`, cleanupError);
             }
           }
-
-          if (enriched > 0) {
-            this.logger.info(`Enriched ${enriched}/${sources.length} sources`);
-          }
+          this.logger.warn(
+            `Skipping artist ${selectedArtist.id} after workflow error`,
+            artistError
+          );
         }
-      } catch (error) {
-        this.logger.warn('Source enrichment failed (non-fatal)', error);
       }
 
-      // Step 7: Synthesize article
-      this.logger.info('Starting article synthesis');
-      state.status = 'synthesizing';
-
-      const synthesisResult = await synthesis.synthesize(selectedArtist.id!);
-      state.draft_id = synthesisResult.draft.id;
-      this.logger.info('Article synthesized', synthesisResult.metadata);
-
-      // Step 8: Source visual materials (with verified sources)
-      this.logger.info('Sourcing verified images');
-      const artistSources = await sourceOps.findByArtistId(selectedArtist.id!);
-      const images = await visual.sourceImages(
-        {
-          full_name: selectedArtist.full_name,
-          visual_practice: selectedArtist.visual_practice ?? undefined,
-          birthplace_city: selectedArtist.birthplace_city ?? undefined,
-          birthplace_state: selectedArtist.birthplace_state ?? undefined,
-        },
-        artistSources,
-        synthesisResult.draft.id!,
-        3
-      );
-      this.logger.info(`Sourced ${images.length} verified images`);
-
-      // Zero images = warning, not fatal error (email supports no images)
-      if (images.length === 0) {
-        this.logger.warn('No verified images found — article will be sent without images');
-      }
-
-      // Step 9: Send approval email
-      if (options.dryRun) {
-        this.logger.info('DRY RUN - Skipping email send');
-      } else {
-        this.logger.info('Sending approval email');
-        state.status = 'emailing';
-
-        await email.sendApprovalEmail({
-          draftId: synthesisResult.draft.id!,
-          images,
-        });
-
-        state.email_sent = true;
-        state.status = 'awaiting_approval';
-        this.logger.info('✓ Approval email sent successfully');
+      if (!completed) {
+        throw new Error('No verified artist produced an approval-ready article with at least 2 pure artworks');
       }
 
       state.status = 'completed';
@@ -323,5 +334,92 @@ export class WorkflowOrchestrator {
     }
 
     return filtered;
+  }
+
+  private async rankArtistsForVariety(artists: Artist[]): Promise<Artist[]> {
+    if (artists.length <= 1) {
+      return artists;
+    }
+
+    const recentSentDrafts = await draftOps.findByStatus('sent');
+    const recentPracticeCounts = new Map<string, number>();
+    const recentArtistIds = new Set<number>();
+
+    for (const draft of recentSentDrafts.slice(0, 12)) {
+      recentArtistIds.add(draft.artist_id);
+      const artist = await artistOps.findById(draft.artist_id);
+      const practice = this.normalizePractice(artist?.visual_practice);
+      recentPracticeCounts.set(practice, (recentPracticeCounts.get(practice) ?? 0) + 1);
+    }
+
+    return [...artists].sort((a, b) => {
+      const practiceA = this.normalizePractice(a.visual_practice);
+      const practiceB = this.normalizePractice(b.visual_practice);
+      const countA = recentPracticeCounts.get(practiceA) ?? 0;
+      const countB = recentPracticeCounts.get(practiceB) ?? 0;
+
+      if (countA !== countB) return countA - countB;
+
+      const seenA = recentArtistIds.has(a.id ?? -1) ? 1 : 0;
+      const seenB = recentArtistIds.has(b.id ?? -1) ? 1 : 0;
+      if (seenA !== seenB) return seenA - seenB;
+
+      return 0;
+    });
+  }
+
+  private normalizePractice(practice?: string | null): string {
+    if (!practice) return 'unknown';
+
+    const normalized = practice
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+    if (normalized.includes('xilo') || normalized.includes('woodcut')) return 'xilogravura';
+    if (normalized.includes('pint')) return 'pintura';
+    if (normalized.includes('fot')) return 'fotografia';
+    if (normalized.includes('escult')) return 'escultura';
+    if (normalized.includes('instal')) return 'instalacao';
+    if (normalized.includes('desenh') || normalized.includes('drawing')) return 'desenho';
+    if (normalized.includes('ceram')) return 'ceramica';
+    if (normalized.includes('gravur') || normalized.includes('print')) return 'gravura';
+    if (normalized.includes('performance')) return 'performance';
+    if (normalized.includes('conceit')) return 'arte_conceitual';
+
+    return normalized;
+  }
+
+  private async enrichArtistSources(artistId: number): Promise<void> {
+    try {
+      const scraperBridge = new ScraperBridge();
+      if (!(await scraperBridge.isAvailable())) {
+        return;
+      }
+
+      this.logger.info('Enriching sources with Scrapling');
+      const sources = await sourceOps.findByArtistId(artistId);
+      let enriched = 0;
+
+      for (const source of sources) {
+        if (source.content_summary && source.content_summary.length >= 400) continue;
+
+        try {
+          const result = await scraperBridge.fetchPage(source.url);
+          if (result.success && result.content && result.content.length > 100) {
+            await sourceOps.updateContentSummary(source.id!, result.content);
+            enriched++;
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to enrich source ${source.id}`, err);
+        }
+      }
+
+      if (enriched > 0) {
+        this.logger.info(`Enriched ${enriched}/${sources.length} sources`);
+      }
+    } catch (error) {
+      this.logger.warn('Source enrichment failed (non-fatal)', error);
+    }
   }
 }

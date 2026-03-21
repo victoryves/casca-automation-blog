@@ -21,6 +21,15 @@ interface ArtistInfo {
   birthplace_state?: string;
 }
 
+interface DirectImageCandidate {
+  url: string;
+  context: string;
+  alt: string;
+  title: string;
+  objectTitle: string;
+  objectHref: string;
+}
+
 export class VisualModule {
   private readonly imagesDir: string;
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
@@ -47,8 +56,13 @@ export class VisualModule {
 
     const images: Image[] = [];
 
+    // Layer 0: Extract likely artwork images directly from source HTML.
+    await this.extractDirectSourceImages(artist, sources, images, maxImages);
+
     // Layer 1: Extract from verified sources (no Claude verification needed)
-    await this.extractFromVerifiedSources(artist, sources, images, maxImages);
+    if (images.length < maxImages) {
+      await this.extractFromVerifiedSources(artist, sources, images, maxImages);
+    }
 
     // Layer 2: Wikimedia Commons + Claude Vision
     if (images.length < maxImages) {
@@ -62,6 +76,86 @@ export class VisualModule {
 
     console.log(`  ✓ Sourced ${images.length} verified images total`);
     return images;
+  }
+
+  /**
+   * Layer 0: Directly fetch source HTML and extract likely artwork image URLs.
+   * This works even when Scrapling is unavailable or partially broken.
+   */
+  private async extractDirectSourceImages(
+    artist: ArtistInfo,
+    sources: Source[],
+    images: Image[],
+    maxImages: number
+  ): Promise<void> {
+    const sortedSources = [...sources].sort(
+      (a, b) => (b.credibility_score ?? 0) - (a.credibility_score ?? 0)
+    );
+
+    for (const source of sortedSources) {
+      if (images.length >= maxImages) break;
+
+      try {
+        const response = await axios.get(source.url, {
+          timeout: 15000,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          },
+        });
+
+        const html = typeof response.data === 'string' ? response.data : '';
+        if (!html) continue;
+
+        const candidates = this.extractImageCandidatesFromHtml(html, source.url);
+        for (const candidate of candidates) {
+          if (images.length >= maxImages) break;
+          if (images.some((image) => image.url === candidate.url)) continue;
+          const candidateMetadata = `${candidate.alt} ${candidate.title} ${candidate.objectTitle}`.trim();
+
+          if (
+            (!candidate.objectTitle.trim() && candidate.context.includes('visualizacao rapida')) ||
+            ((!candidate.objectTitle.trim() && !candidate.objectHref.trim()) &&
+              ['untitled', 'sem titulo'].includes(candidate.alt.trim().toLowerCase())) ||
+            (!candidateMetadata &&
+              !this.containsArtworkSignals(this.normalizeText(candidate.url))) ||
+            !candidate.alt.trim() &&
+            !candidate.title.trim() &&
+            !candidate.objectTitle.trim() &&
+            !candidate.objectHref.trim()
+          ) {
+            console.log(
+              `  ✗ Rejected direct-source image from ${source.institution}: Image lacks descriptive metadata and object link`
+            );
+            continue;
+          }
+
+          const prevalidated = await this.prevalidateSourceImage(
+            candidate.url,
+            `${candidate.url} ${candidate.context} ${source.url} ${source.institution}`,
+            true
+          );
+          if (!prevalidated.ok) {
+            console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${prevalidated.reason}`);
+            continue;
+          }
+
+          const quality = await this.verifyImageWithClaude(candidate.url, artist);
+          if (quality.verified || this.isTrustedSource(source)) {
+            images.push({
+              url: candidate.url,
+              caption: `Artwork by ${artist.full_name}`,
+              attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
+            });
+            console.log(`  ✓ Added direct-source image from ${source.institution}: ${quality.reason}`);
+          } else {
+            console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${quality.reason}`);
+          }
+        }
+      } catch (error) {
+        console.warn(`  ✗ Failed direct image extraction from ${source.url}:`, error);
+      }
+    }
   }
 
   /**
@@ -94,9 +188,21 @@ export class VisualModule {
         if (result.success && result.images.length > 0) {
           for (const img of result.images) {
             if (images.length >= maxImages) break;
+            if (images.some((image) => image.url === img.url)) continue;
+
+            const prevalidated = await this.prevalidateSourceImage(
+              img.url,
+              `${img.url} ${img.alt} ${source.url} ${source.institution}`,
+              true
+            );
+            if (!prevalidated.ok) {
+              console.log(`  ✗ Rejected from ${source.institution}: ${prevalidated.reason}`);
+              continue;
+            }
+
             // Even verified sources need quality check (could be banners/thumbnails)
             const quality = await this.verifyImageWithClaude(img.url, artist);
-            if (quality.verified) {
+            if (quality.verified || this.isTrustedSource(source)) {
               images.push({
                 url: img.url,
                 caption: img.alt || `Artwork by ${artist.full_name}`,
@@ -173,6 +279,17 @@ export class VisualModule {
 
     for (const img of searchResult.images) {
       if (images.length >= maxImages) break;
+      if (images.some((image) => image.url === img.url)) continue;
+
+      const prevalidated = await this.prevalidateSourceImage(
+        img.url,
+        `${img.url} ${img.caption ?? ''} ${img.source_page ?? ''}`,
+        true
+      );
+      if (!prevalidated.ok) {
+        console.log(`  ✗ Web image rejected: ${prevalidated.reason}`);
+        continue;
+      }
 
       const verification = await this.verifyImageWithClaude(img.url, artist);
       if (verification.verified) {
@@ -186,6 +303,340 @@ export class VisualModule {
         console.log(`  ✗ Web image rejected: ${verification.reason}`);
       }
     }
+  }
+
+  private isTrustedSource(source: Source): boolean {
+    return (source.credibility_score ?? 0) >= 0.9;
+  }
+
+  private async prevalidateSourceImage(
+    url: string,
+    contextText = '',
+    requireArtworkSignal = false
+  ): Promise<{ ok: boolean; reason: string }> {
+    if (this.isBlockedImageHost(url)) {
+      return { ok: false, reason: 'Image host is too risky for approval emails' };
+    }
+
+    const imageData = await this.downloadImageAsBase64(url);
+    if (!imageData) {
+      return { ok: false, reason: 'Could not download image for validation' };
+    }
+
+    const normalizedContext = this.normalizeText(`${url} ${contextText}`);
+
+    if (this.containsNonArtworkSignals(normalizedContext)) {
+      return { ok: false, reason: 'Context suggests portrait, author photo, or book cover instead of artwork' };
+    }
+
+    if (requireArtworkSignal && !this.containsArtworkSignals(normalizedContext)) {
+      return { ok: false, reason: 'No strong artwork signal found in caption or source context' };
+    }
+
+    return { ok: true, reason: 'Image passed direct-source validation' };
+  }
+
+  private containsNonArtworkSignals(text: string): boolean {
+    const blockedSignals = [
+      'author photo',
+      'artist photo',
+      'photo of the artist',
+      'artist portrait',
+      'portrait',
+      'retrato',
+      'selfie',
+      'profile',
+      'headshot',
+      'author',
+      'writer',
+      'book launch',
+      'biography',
+      'biografia',
+      'book',
+      'livro',
+      'ebook',
+      'course',
+      'curso',
+      'class',
+      'lesson',
+      'workshop',
+      'oficina',
+      'flyer',
+      'poster',
+      'cartaz',
+      'event',
+      'evento',
+      'festival',
+      'opening',
+      'xilogravura em papel',
+      'gravura em papel',
+      'print on paper',
+      'woodcut print on paper',
+      'paper print',
+      'printed paper',
+      'papel impresso',
+      'program',
+      'programa',
+      'registration',
+      'inscricao',
+      'enroll',
+      'product',
+      'produto',
+      'store',
+      'shop',
+      'loja',
+      'buy',
+      'comprar',
+      'sale',
+      'venda',
+      'price',
+      'preco',
+      'cart',
+      'carrinho',
+      'quadro',
+      'quadrinho',
+      'tile',
+      'tiles',
+      'surface',
+      'surfaces',
+      'applied on',
+      'application on',
+      'mockup',
+      'mock-up',
+      'interior decor',
+      'wall decor',
+      'moldura',
+      'frame',
+      'framed',
+      'azulejo',
+      'madeira',
+      'wood panel',
+      'wood plaque',
+      'artesanato',
+      'decor',
+      'decoration',
+      'capa',
+      'cover',
+      'catalog',
+      'catalogue',
+      'publication',
+      'publicacao',
+      'person holding',
+      'holding book',
+      'foto do autor',
+      'foto do artista',
+      'inventory',
+      'abebooks',
+      'amazon',
+      'kindle',
+      'editora',
+      'publisher',
+      'isbn',
+      'hardcover',
+      'paperback',
+      'workshop portrait',
+      'interview',
+    ];
+
+    return blockedSignals.some((signal) => text.includes(signal));
+  }
+
+  private containsArtworkSignals(text: string): boolean {
+    const artworkSignals = [
+      'artwork',
+      'work on paper',
+      'work',
+      'works',
+      'obra',
+      'obras',
+      'painting',
+      'paintings',
+      'pintura',
+      'pinturas',
+      'woodcut',
+      'woodcuts',
+      'xilo',
+      'xilogravura',
+      'xilogravuras',
+      'gravura',
+      'gravuras',
+      'print',
+      'prints',
+      'acervo',
+      'collection',
+      'colecao',
+      'museum',
+      'museu',
+      'gallery',
+      'galeria',
+      'canvas',
+      'paper',
+      'cordel',
+      'etching',
+      'engraving',
+      'linocut',
+      'serigraph',
+      'silkscreen',
+      'mixed media',
+      'oil on canvas',
+      'acrylic on canvas',
+      'tempera',
+      'untitled',
+      'series',
+      'obra em',
+    ];
+
+    return artworkSignals.some((signal) => text.includes(signal));
+  }
+
+  private isBlockedImageHost(url: string): boolean {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      const blockedHosts = [
+        'pictures.abebooks.com',
+        'abebooks.com',
+        'amazon.com',
+        'amazon.com.br',
+        'm.media-amazon.com',
+        'books.google.com',
+        'cdn.sistemawbuy.com.br',
+        'sistemawbuy.com.br',
+        'imaterial.art.br',
+        'blogger.googleusercontent.com',
+        'bp.blogspot.com',
+        'blogspot.com',
+        'pinterest.com',
+        'pinimg.com',
+      ];
+
+      return blockedHosts.some((blockedHost) => hostname === blockedHost || hostname.endsWith(`.${blockedHost}`));
+    } catch {
+      return false;
+    }
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
+
+  private extractImageCandidatesFromHtml(html: string, sourceUrl: string): DirectImageCandidate[] {
+    const candidates: DirectImageCandidate[] = [];
+    const seen = new Set<string>();
+    const imgTagPattern = /<img\b[^>]*>/gi;
+
+    for (const match of html.matchAll(imgTagPattern)) {
+      const tag = match[0];
+      const src = this.extractAttribute(tag, 'src') ?? this.extractAttribute(tag, 'data-src');
+      if (!src) continue;
+
+      const alt = this.extractAttribute(tag, 'alt') ?? '';
+      const title = this.extractAttribute(tag, 'title') ?? '';
+      const snippet = html.slice(
+        Math.max(0, (match.index ?? 0) - 220),
+        Math.min(html.length, (match.index ?? 0) + tag.length + 420)
+      );
+      const galleryTitle = this.extractSnippetValue(
+        snippet,
+        /data-testid="gallery-item-title"[^>]*>([^<]+)</i
+      );
+      const objectHref =
+        this.extractSnippetValue(snippet, /<a[^>]+href="([^"]+)"/i) ??
+        this.extractSnippetValue(snippet, /<a[^>]+href='([^']+)'/i) ??
+        '';
+      const context = [alt, title, galleryTitle, objectHref].filter(Boolean).join(' ');
+      this.pushImageCandidate(
+        candidates,
+        seen,
+        src,
+        context,
+        sourceUrl,
+        alt,
+        title,
+        galleryTitle,
+        objectHref
+      );
+    }
+
+    const rawUrlPattern =
+      /https?:\/\/[^"'()\s>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'()\s>]*)?/gi;
+    for (const match of html.matchAll(rawUrlPattern)) {
+      this.pushImageCandidate(candidates, seen, match[0], '', sourceUrl, '', '', '', '');
+    }
+
+    return candidates.slice(0, 12);
+  }
+
+  private pushImageCandidate(
+    candidates: DirectImageCandidate[],
+    seen: Set<string>,
+    rawUrl: string,
+    context: string,
+    sourceUrl: string,
+    alt: string,
+    title: string,
+    objectTitle: string,
+    objectHref: string
+  ): void {
+    try {
+      const absolute = this.normalizeImageUrl(new URL(rawUrl, sourceUrl).toString());
+      const lower = absolute.toLowerCase();
+
+      if (
+        lower.includes('logo') ||
+        lower.includes('icon') ||
+        lower.includes('avatar') ||
+        lower.includes('profile') ||
+        lower.includes('thumb') ||
+        lower.includes('banner') ||
+        lower.includes('sprite')
+      ) {
+        return;
+      }
+
+      if (seen.has(absolute)) {
+        return;
+      }
+
+      seen.add(absolute);
+      candidates.push({ url: absolute, context, alt, title, objectTitle, objectHref });
+    } catch {
+      // Skip malformed URLs
+    }
+  }
+
+  private normalizeImageUrl(url: string): string {
+    try {
+      const wixMatch = url.match(
+        /^https:\/\/static\.wixstatic\.com\/media\/([^/]+\.(?:jpg|jpeg|png|webp))(?:\/v1\/fill\/[^?]+)?(?:\?.*)?$/i
+      );
+      if (wixMatch?.[1]) {
+        return `https://static.wixstatic.com/media/${wixMatch[1]}`;
+      }
+
+      return url;
+    } catch {
+      return url;
+    }
+  }
+
+  private extractAttribute(tag: string, attribute: string): string | null {
+    const quotedPattern = new RegExp(`${attribute}=["']([^"']+)["']`, 'i');
+    const quotedMatch = tag.match(quotedPattern);
+    if (quotedMatch?.[1]) {
+      return quotedMatch[1];
+    }
+
+    const unquotedPattern = new RegExp(`${attribute}=([^\\s>]+)`, 'i');
+    const unquotedMatch = tag.match(unquotedPattern);
+    return unquotedMatch?.[1] ?? null;
+  }
+
+  private extractSnippetValue(snippet: string, pattern: RegExp): string {
+    const match = snippet.match(pattern);
+    return match?.[1]?.trim() ?? '';
   }
 
   /**
@@ -287,10 +738,10 @@ When in doubt on any criterion, say false.`,
         },
       });
 
-      // Reject small files (< 50KB — likely low-res, thumbnails, or icons)
+      // Reject very small files (< 40KB — likely low-res, thumbnails, or icons)
       const buffer = Buffer.from(response.data);
-      if (buffer.length < 50_000) {
-        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 50KB)`);
+      if (buffer.length < 40_000) {
+        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 40KB)`);
         return null;
       }
 

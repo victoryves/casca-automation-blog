@@ -16,6 +16,9 @@ export interface SendApprovalEmailOptions {
   images?: Image[];
 }
 
+const TARGET_APPROVAL_IMAGES = 3;
+const MIN_APPROVAL_IMAGES = 2;
+
 export class EmailModule {
   private client: Resend;
 
@@ -66,11 +69,29 @@ export class EmailModule {
       let attachments: any[] = [];
       let successfulImages: Image[] = [];
 
-      if (options.images && options.images.length > 0) {
+      if (!options.images || options.images.length < MIN_APPROVAL_IMAGES) {
+        throw new Error(
+          `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} images`
+        );
+      }
+
+      if (options.images.length > 0) {
         console.log(`  Downloading ${options.images.length} images...`);
         const result = await this.prepareImageAttachments(options.images);
         attachments = result.attachments;
         successfulImages = result.validatedImages;
+      }
+
+      if (successfulImages.length < MIN_APPROVAL_IMAGES) {
+        throw new Error(
+          `Refusing to send approval email with only ${successfulImages.length} validated images`
+        );
+      }
+
+      if (successfulImages.length < TARGET_APPROVAL_IMAGES) {
+        console.log(
+          `  ⚠ Sending with ${successfulImages.length} images (preferred target is ${TARGET_APPROVAL_IMAGES})`
+        );
       }
 
       // Generate email template with only successful images
@@ -86,18 +107,12 @@ export class EmailModule {
         attachments: attachments.length > 0 ? attachments : undefined,
       });
 
-      if (attachments.length === 0 && options.images && options.images.length > 0) {
-        console.log(`  ⚠ Email sent without images (download failed)`);
-      }
-
       console.log(`  ✓ Email sent:`, result.data);
 
       // Save ONLY successful images to draft (for later publishing)
       if (successfulImages.length > 0) {
         await draftOps.updateImages(options.draftId, successfulImages);
         console.log(`  ✓ Saved ${successfulImages.length} validated images to draft`);
-      } else if (options.images && options.images.length > 0) {
-        console.log(`  ⚠️ No images validated - not saving to draft`);
       }
 
       // Update draft status

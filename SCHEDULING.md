@@ -4,7 +4,7 @@ This document explains how to set up automatic daily execution of the CASCA Edit
 
 ## Overview
 
-The CASCA Editorial Agent runs daily at **midnight (00:00)** to:
+The CASCA Editorial Agent retries **every hour** until it successfully sends **one article per local day** to:
 1. Check for verified artists
 2. Generate article drafts using Claude
 3. Source images
@@ -23,7 +23,7 @@ Run the installation script:
 This will:
 - Create necessary log directories
 - Install a macOS launchd agent
-- Configure it to run daily at midnight
+- Configure it to retry hourly until one daily article is sent
 - Load and activate the scheduler
 
 ### What Gets Installed
@@ -53,7 +53,7 @@ launchctl list | grep casca
 
 You should see: `com.casca.daily-workflow`
 
-### Check the next scheduled run
+### Check the current scheduler state
 
 ```bash
 launchctl print gui/$(id -u)/com.casca.daily-workflow
@@ -103,20 +103,20 @@ npm run daily -- --skip-discovery
 ### Reload the agent (after making changes)
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.casca.daily-workflow.plist
-launchctl load ~/Library/LaunchAgents/com.casca.daily-workflow.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.casca.daily-workflow.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.casca.daily-workflow.plist
 ```
 
 ### Temporarily disable
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.casca.daily-workflow.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.casca.daily-workflow.plist
 ```
 
 ### Re-enable
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.casca.daily-workflow.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.casca.daily-workflow.plist
 ```
 
 ### Completely uninstall
@@ -130,20 +130,11 @@ launchctl load ~/Library/LaunchAgents/com.casca.daily-workflow.plist
 To change when the script runs, edit `com.casca.daily-workflow.plist`:
 
 ```xml
-<key>StartCalendarInterval</key>
-<dict>
-    <key>Hour</key>
-    <integer>0</integer>    <!-- Hour (0-23) -->
-    <key>Minute</key>
-    <integer>0</integer>    <!-- Minute (0-59) -->
-</dict>
+<key>StartInterval</key>
+<integer>3600</integer>
 ```
 
-For example, to run at 9 AM:
-```xml
-<key>Hour</key>
-<integer>9</integer>
-```
+`3600` means "retry every 60 minutes". The workflow itself prevents duplicate same-day sends.
 
 After editing, reload the agent:
 ```bash
@@ -198,7 +189,7 @@ These files are gitignored and only exist locally.
 
 ```
 launchd (macOS system)
-  ↓ (runs at midnight)
+  ↓ (runs hourly)
 com.casca.daily-workflow.plist
   ↓ (executes)
 scripts/run-daily-wrapper.sh
@@ -228,8 +219,9 @@ npm run daily -- --force
 
 ## Notes
 
-- The script only sends one email per day (by design)
-- If an email was already sent today, it will skip execution
+- The script retries hourly until one email is sent for the local day
+- If an email was already sent today, it will skip execution and exit successfully
 - Use `--force` flag to override this behavior during testing
 - The launchd agent runs as your user, so it has access to your environment
+- Keep the runner outside `Documents` to avoid macOS privacy restrictions
 - Make sure the Mac Mini doesn't sleep (or wake it for scheduled tasks in System Settings)
