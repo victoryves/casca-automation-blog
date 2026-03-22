@@ -13,6 +13,7 @@ import { SynthesisModule } from '../modules/synthesis/index.js';
 import { VisualModule } from '../modules/visual/index.js';
 import { EmailModule } from '../modules/email/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
+import { queueRejectedDraftReplacement } from '../modules/rejections/index.js';
 import { ScraperBridge } from '../modules/scraper-bridge/index.js';
 import { Logger } from '../utils/logger.js';
 import type { WorkflowState, Artist } from '../types/index.js';
@@ -310,44 +311,32 @@ export class WorkflowOrchestrator {
 
     try {
       initDatabase();
-
-      const draft = await draftOps.findById(draftId);
-      if (!draft) {
-        throw new Error(`Draft ${draftId} not found`);
-      }
-
-      const alreadyRejected = draft.status === 'rejected';
-
-      if (!alreadyRejected) {
-        await draftOps.updateStatus(draftId, 'rejected');
-        this.logger.info(`Draft ${draftId} marked as rejected`);
-      }
-
-      // Mark artist as published so they won't be picked again by findVerifiedUnpublished
-      // (DB constraint only allows discovered/verified/published, so we use 'published' to exclude)
-      await artistOps.updateStatus(draft.artist_id, 'published');
-      this.logger.info(`Artist ${draft.artist_id} marked as published (excluded from future picks)`);
-
-      await this.queuePendingReplacementRequest(draftId);
+      const result = await queueRejectedDraftReplacement(draftId);
       this.logger.info(`Queued replacement request for rejected draft ${draftId}`);
-
-      closeDatabase();
-
-      return { queued: true, alreadyRejected };
+      return result;
     } catch (error) {
       this.logger.error('Failed to mark rejection', error);
-      closeDatabase();
       throw error;
+    } finally {
+      closeDatabase();
     }
   }
 
   private async filterArtistsWithSources(artists: Artist[], minSources: number): Promise<Artist[]> {
     if (artists.length === 0) return artists;
 
+    const excludedArtistNames = await this.getPreviouslySentArtistNames();
     const filtered: Artist[] = [];
+
     for (const artist of artists) {
       if (!artist.id) continue;
       try {
+        const normalizedArtistName = this.normalizeArtistName(artist.full_name);
+        if (excludedArtistNames.has(normalizedArtistName)) {
+          this.logger.warn(`Skipping artist ${artist.id} (${artist.full_name}) because this artist was already emailed before`);
+          continue;
+        }
+
         const drafts = await draftOps.findByArtistId(artist.id);
         const hasPendingApproval = drafts.some((draft) => draft.status === 'sent');
         if (hasPendingApproval) {
@@ -456,19 +445,6 @@ export class WorkflowOrchestrator {
     }
   }
 
-  private async queuePendingReplacementRequest(draftId: number): Promise<void> {
-    const logs = await publishingOps.findByDraftId(draftId);
-    const existingQueueLog = logs.find((log) => log.error_message === 'replacement_requested');
-    if (existingQueueLog) {
-      return;
-    }
-
-    await publishingOps.create({
-      draft_id: draftId,
-      error_message: 'replacement_requested',
-    });
-  }
-
   private async getPendingReplacementRequests(): Promise<PendingReplacementRequest[]> {
     const failedLogs = await publishingOps.findFailed();
 
@@ -484,5 +460,32 @@ export class WorkflowOrchestrator {
 
   private async clearPendingReplacementRequest(logId: number): Promise<void> {
     await publishingOps.delete(logId);
+  }
+
+  private async getPreviouslySentArtistNames(): Promise<Set<string>> {
+    const drafts = await draftOps.findByStatus('sent');
+    const approvedDrafts = await draftOps.findByStatus('approved');
+    const rejectedDrafts = await draftOps.findByStatus('rejected');
+    const seenNames = new Set<string>();
+
+    for (const draft of [...drafts, ...approvedDrafts, ...rejectedDrafts]) {
+      const artist = await artistOps.findById(draft.artist_id);
+      if (!artist?.full_name) {
+        continue;
+      }
+
+      seenNames.add(this.normalizeArtistName(artist.full_name));
+    }
+
+    return seenNames;
+  }
+
+  private normalizeArtistName(name: string): string {
+    return name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+      .toLowerCase();
   }
 }

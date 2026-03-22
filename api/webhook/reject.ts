@@ -7,9 +7,9 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { WorkflowOrchestrator } from '../../src/orchestrator/workflow.js';
 import { draftOps } from '../../src/db/operations/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
+import { queueRejectedDraftReplacement } from '../../src/modules/rejections/index.js';
 
 // Fast webhook: queue the replacement and return immediately
 export const maxDuration = 30;
@@ -49,11 +49,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return res.status(400).send(page('Invalid Status', `Draft is "${draft.status}", expected "sent".`));
     }
 
-    closeDatabase();
-
     console.log(`Rejecting draft ${draftId}: ${draft.title}`);
-    const orchestrator = new WorkflowOrchestrator();
-    const result = await orchestrator.handleRejection(draftId);
+    const result = await queueRejectedDraftReplacement(draftId);
+
+    closeDatabase();
 
     return res.status(200).send(
       page(
