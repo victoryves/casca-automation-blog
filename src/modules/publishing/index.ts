@@ -7,7 +7,6 @@
 import axios from 'axios';
 import { marked } from 'marked';
 import { draftOps, artistOps, publishingOps, sourceOps } from '../../db/operations/index.js';
-import { getConfig } from '../../config/index.js';
 import type { PublishingResult, Draft, Image } from '../../types/index.js';
 
 export class PublishingModule {
@@ -51,8 +50,6 @@ export class PublishingModule {
         error: 'Artist not found',
       };
     }
-
-    const config = getConfig();
 
     // Parse images
     const images: Image[] = draft.images ? JSON.parse(draft.images) : [];
@@ -187,8 +184,6 @@ export class PublishingModule {
     sources?: any[],
     coverImage?: Image
   ): Promise<string> {
-    const config = getConfig();
-
     // Start with the original content and normalize line breaks
     // Convert single line breaks to double (markdown paragraphs)
     let content = draft.content.replace(/\n/g, '\n\n');

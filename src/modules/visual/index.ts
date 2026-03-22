@@ -96,6 +96,10 @@ export class VisualModule {
 
     for (const source of sortedSources) {
       if (images.length >= maxImages) break;
+      if (this.isSocialSource(source.url, source.institution)) {
+        console.log(`  Skipping social source for images: ${source.url}`);
+        continue;
+      }
 
       try {
         const response = await axios.get(source.url, {
@@ -205,6 +209,10 @@ export class VisualModule {
 
     for (const source of sortedSources) {
       if (images.length >= maxImages) break;
+      if (this.isSocialSource(source.url, source.institution)) {
+        console.log(`  Skipping social source for images: ${source.url}`);
+        continue;
+      }
 
       try {
         console.log(`  Extracting images from ${source.institution}: ${source.url}`);
@@ -362,6 +370,40 @@ export class VisualModule {
       );
 
       return hostTrusted && (source.credibility_score ?? 0) >= 0.9;
+    } catch {
+      return false;
+    }
+  }
+
+  private isSocialSource(url: string, institution = ''): boolean {
+    const normalizedInstitution = institution.toLowerCase();
+    if (
+      normalizedInstitution.includes('instagram') ||
+      normalizedInstitution.includes('pinterest') ||
+      normalizedInstitution.includes('facebook') ||
+      normalizedInstitution.includes('twitter') ||
+      normalizedInstitution.includes('x.com') ||
+      normalizedInstitution.includes('tiktok')
+    ) {
+      return true;
+    }
+
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      const socialHosts = [
+        'instagram.com',
+        'cdninstagram.com',
+        'facebook.com',
+        'fbcdn.net',
+        'pinterest.com',
+        'pinimg.com',
+        'x.com',
+        'twitter.com',
+        'tiktok.com',
+        'tumblr.com',
+      ];
+
+      return socialHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
     } catch {
       return false;
     }

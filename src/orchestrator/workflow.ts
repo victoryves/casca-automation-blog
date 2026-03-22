@@ -32,24 +32,28 @@ interface PendingReplacementRequest {
 
 export class WorkflowOrchestrator {
   private logger: Logger;
-  private config: ReturnType<typeof getConfig>;
+  private config: ReturnType<typeof getConfig> | null;
 
   constructor() {
-    this.config = getConfig();
-    this.logger = new Logger('./logs', this.config.env.logLevel);
+    this.config = null;
+    this.logger = new Logger(
+      './logs',
+      ((process.env.LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ?? 'info')
+    );
   }
 
   /**
    * Execute daily workflow
    */
   async execute(options: WorkflowOptions = {}): Promise<WorkflowState> {
+    const config = this.ensureConfig();
     this.logger.logWorkflowStart();
     this.logger.info('Starting daily workflow', options);
 
     const state: WorkflowState = {
       date: new Intl.DateTimeFormat('en-CA', {
         timeZone:
-          this.config.env.appTimezone ||
+          config.env.appTimezone ||
           Intl.DateTimeFormat().resolvedOptions().timeZone ||
           'UTC',
         year: 'numeric',
@@ -66,11 +70,11 @@ export class WorkflowOrchestrator {
       initDatabase();
 
       // Initialize modules
-      const discovery = new DiscoveryModule(this.config.env.tavilyApiKey);
+      const discovery = new DiscoveryModule(config.env.tavilyApiKey);
       const verification = new VerificationModule();
-      const synthesis = new SynthesisModule(this.config.env.geminiApiKey);
-      const visual = new VisualModule(this.config.env.geminiApiKey);
-      const email = new EmailModule(this.config.env.resendApiKey);
+      const synthesis = new SynthesisModule(config.env.geminiApiKey);
+      const visual = new VisualModule(config.env.geminiApiKey);
+      const email = new EmailModule(config.env.resendApiKey);
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
 
@@ -193,7 +197,7 @@ export class WorkflowOrchestrator {
 
           if (images.length < 2) {
             await draftOps.delete(synthesisResult.draft.id!);
-            await artistOps.updateStatus(selectedArtist.id!, 'published');
+            await artistOps.updateStatus(selectedArtist.id!, 'rejected');
             state.draft_id = undefined;
             this.logger.warn(
               `Skipping artist ${selectedArtist.id} because only ${images.length} verified pure artwork image(s) were found`
@@ -271,6 +275,7 @@ export class WorkflowOrchestrator {
     this.logger.info(`Processing approval for draft ${draftId}`);
 
     try {
+      const config = this.ensureConfig();
       initDatabase();
 
       // Update draft status
@@ -278,15 +283,15 @@ export class WorkflowOrchestrator {
       this.logger.info('Draft marked as approved');
 
       // Check if Hashnode credentials are configured
-      if (!this.config.env.hashnodeApiKey || !this.config.env.hashnodePublicationId) {
+      if (!config.env.hashnodeApiKey || !config.env.hashnodePublicationId) {
         this.logger.error('Hashnode API key or Publication ID not configured');
         throw new Error('Hashnode credentials not configured in environment');
       }
 
       // Publish
       const publishing = new PublishingModule(
-        this.config.env.hashnodeApiKey,
-        this.config.env.hashnodePublicationId
+        config.env.hashnodeApiKey,
+        config.env.hashnodePublicationId
       );
       const result = await publishing.publish(draftId);
 
@@ -344,11 +349,17 @@ export class WorkflowOrchestrator {
           continue;
         }
 
-        const count = await sourceOps.countForArtist(artist.id);
-        if (count >= minSources) {
+        const sources = await sourceOps.findByArtistId(artist.id);
+        const eligibleSourceCount = sources.filter(
+          (source) => !this.isSocialSource(source.url, source.institution)
+        ).length;
+
+        if (eligibleSourceCount >= minSources) {
           filtered.push(artist);
         } else {
-          this.logger.warn(`Skipping artist ${artist.id} with ${count} sources (min ${minSources})`);
+          this.logger.warn(
+            `Skipping artist ${artist.id} with ${eligibleSourceCount} eligible non-social sources (min ${minSources})`
+          );
         }
       } catch (error) {
         this.logger.warn(`Failed to count sources for artist ${artist.id}`, error);
@@ -487,5 +498,45 @@ export class WorkflowOrchestrator {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private ensureConfig(): ReturnType<typeof getConfig> {
+    if (!this.config) {
+      this.config = getConfig();
+      this.logger = new Logger('./logs', this.config.env.logLevel);
+    }
+
+    return this.config;
+  }
+
+  private isSocialSource(url: string, institution = ''): boolean {
+    const normalizedInstitution = institution.toLowerCase();
+    if (
+      normalizedInstitution.includes('instagram') ||
+      normalizedInstitution.includes('pinterest') ||
+      normalizedInstitution.includes('facebook') ||
+      normalizedInstitution.includes('twitter') ||
+      normalizedInstitution.includes('x.com') ||
+      normalizedInstitution.includes('tiktok')
+    ) {
+      return true;
+    }
+
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      const socialHosts = [
+        'instagram.com',
+        'facebook.com',
+        'pinterest.com',
+        'x.com',
+        'twitter.com',
+        'tiktok.com',
+        'tumblr.com',
+      ];
+
+      return socialHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+    } catch {
+      return false;
+    }
   }
 }
