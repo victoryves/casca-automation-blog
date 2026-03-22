@@ -1,13 +1,13 @@
 /**
  * Synthesis Module
  *
- * Generates Medium-style articles using OpenAI GPT-4o.
+ * Generates Medium-style articles using Gemini.
  */
 
-import OpenAI from 'openai';
 import { marked } from 'marked';
 import { artistOps, sourceOps, draftOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
+import { GeminiClient } from '../../lib/gemini.js';
 import type { SynthesisResult, Artist, Source } from '../../types/index.js';
 
 export interface ArticleStructure {
@@ -18,10 +18,10 @@ export interface ArticleStructure {
 }
 
 export class SynthesisModule {
-  private client: OpenAI;
+  private client: GeminiClient;
 
   constructor(apiKey: string) {
-    this.client = new OpenAI({ apiKey });
+    this.client = new GeminiClient(apiKey);
   }
 
   /**
@@ -112,34 +112,21 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       .replace('{{artist_context}}', artistContext)
       .replace('{{source_context}}', sourceContext);
 
-    console.log(`  Calling OpenAI API (gpt-4o)...`);
+    console.log(`  Calling Gemini API (gemini-2.5-flash)...`);
 
     try {
-      const response = await this.client.chat.completions.create({
-        model: 'gpt-4o',
-        max_tokens: 4096,
+      const content = await this.client.generateText({
+        model: 'gemini-2.5-flash',
+        systemInstruction: prompt.system,
+        userPrompt,
+        maxOutputTokens: 4096,
         temperature: 0.7,
-        messages: [
-          {
-            role: 'system',
-            content: prompt.system,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
       });
 
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error('Empty response from OpenAI');
-      }
-
       // Parse response
-      return this.parseArticleResponse(content);
+      return this.parseArticleResponse(content, artist);
     } catch (error) {
-      console.error('OpenAI API error:', error);
+      console.error('Gemini API error:', error);
       console.warn('Falling back to deterministic article generation');
       return this.buildFallbackArticle(artist, sources);
     }
@@ -148,7 +135,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
   /**
    * Parse Claude's response into structured article
    */
-  private parseArticleResponse(response: string): ArticleStructure {
+  private parseArticleResponse(response: string, artist: Artist): ArticleStructure {
     // Expected format:
     // # Title
     // ## Subtitle
@@ -184,13 +171,17 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
     // Fallback if parsing fails
     if (!title) {
-      title = `The Story of ${response.split('\n')[0].substring(0, 50)}`;
+      title = `Inside the World of ${artist.full_name}`;
     }
     if (!subtitle) {
       subtitle = 'A visual artist from Northeast Brazil';
     }
     if (contentLines.length === 0) {
       contentLines.push(response);
+    }
+
+    if (!this.titleIncludesArtistName(title, artist.full_name)) {
+      title = `${artist.full_name}: ${title}`;
     }
 
     return {
@@ -229,6 +220,25 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       content: `${intro}\n\n${body}\n\n${closing}`,
       keywords: [artist.full_name, 'Brazilian art', 'Northeast Brazil'],
     };
+  }
+
+  private titleIncludesArtistName(title: string, fullName: string): boolean {
+    const normalizedTitle = this.normalizeText(title);
+    const normalizedFullName = this.normalizeText(fullName);
+
+    if (normalizedTitle.includes(normalizedFullName)) {
+      return true;
+    }
+
+    const surname = normalizedFullName.split(/\s+/).filter(Boolean).pop();
+    return Boolean(surname && surname.length >= 3 && normalizedTitle.includes(surname));
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
   }
 
   /**

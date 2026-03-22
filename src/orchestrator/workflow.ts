@@ -5,7 +5,7 @@
  */
 
 import { initDatabase, closeDatabase } from '../db/supabase.js';
-import { artistOps, draftOps, sourceOps } from '../db/operations/index.js';
+import { artistOps, draftOps, publishingOps, sourceOps } from '../db/operations/index.js';
 import { getConfig } from '../config/index.js';
 import { DiscoveryModule } from '../modules/discovery/index.js';
 import { VerificationModule } from '../modules/verification/index.js';
@@ -21,6 +21,12 @@ export interface WorkflowOptions {
   dryRun?: boolean;
   skipDiscovery?: boolean;
   forceRun?: boolean;
+}
+
+interface PendingReplacementRequest {
+  logId: number;
+  draftId: number;
+  requestedAt: string;
 }
 
 export class WorkflowOrchestrator {
@@ -61,16 +67,24 @@ export class WorkflowOrchestrator {
       // Initialize modules
       const discovery = new DiscoveryModule(this.config.env.tavilyApiKey);
       const verification = new VerificationModule();
-      const synthesis = new SynthesisModule(this.config.env.openaiApiKey);
-      const visual = new VisualModule(this.config.env.openaiApiKey);
+      const synthesis = new SynthesisModule(this.config.env.geminiApiKey);
+      const visual = new VisualModule(this.config.env.geminiApiKey);
       const email = new EmailModule(this.config.env.resendApiKey);
+      const pendingReplacementRequests = await this.getPendingReplacementRequests();
+      const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
 
       // Step 1: Check if email already sent today
-      if (!options.forceRun && await email.emailSentToday()) {
+      if (!options.forceRun && !hasPendingReplacementRequest && await email.emailSentToday()) {
         this.logger.info('✓ Email already sent today - skipping workflow');
         state.email_sent = true;
         state.status = 'completed';
         return state;
+      }
+
+      if (hasPendingReplacementRequest) {
+        this.logger.info(
+          `Pending replacement request detected (${pendingReplacementRequests.length}) - bypassing sent-today guard`
+        );
       }
 
       // Step 2: Check for verified unpublished artists
@@ -200,6 +214,14 @@ export class WorkflowOrchestrator {
             state.email_sent = true;
             state.status = 'awaiting_approval';
             this.logger.info('✓ Approval email sent successfully');
+
+            if (pendingReplacementRequests.length > 0) {
+              const oldestPendingRequest = pendingReplacementRequests[0];
+              await this.clearPendingReplacementRequest(oldestPendingRequest.logId);
+              this.logger.info(
+                `Cleared pending replacement request log ${oldestPendingRequest.logId}`
+              );
+            }
           }
 
           completed = true;
@@ -283,7 +305,7 @@ export class WorkflowOrchestrator {
   /**
    * Handle rejection: mark draft/artist as rejected, then re-run workflow for a new artist
    */
-  async handleRejection(draftId: number): Promise<WorkflowState> {
+  async handleRejection(draftId: number): Promise<{ queued: boolean; alreadyRejected: boolean }> {
     this.logger.info(`Processing rejection for draft ${draftId}`);
 
     try {
@@ -294,25 +316,29 @@ export class WorkflowOrchestrator {
         throw new Error(`Draft ${draftId} not found`);
       }
 
-      // Mark draft as rejected
-      await draftOps.updateStatus(draftId, 'rejected');
-      this.logger.info(`Draft ${draftId} marked as rejected`);
+      const alreadyRejected = draft.status === 'rejected';
+
+      if (!alreadyRejected) {
+        await draftOps.updateStatus(draftId, 'rejected');
+        this.logger.info(`Draft ${draftId} marked as rejected`);
+      }
 
       // Mark artist as published so they won't be picked again by findVerifiedUnpublished
       // (DB constraint only allows discovered/verified/published, so we use 'published' to exclude)
       await artistOps.updateStatus(draft.artist_id, 'published');
       this.logger.info(`Artist ${draft.artist_id} marked as published (excluded from future picks)`);
 
+      await this.queuePendingReplacementRequest(draftId);
+      this.logger.info(`Queued replacement request for rejected draft ${draftId}`);
+
       closeDatabase();
+
+      return { queued: true, alreadyRejected };
     } catch (error) {
       this.logger.error('Failed to mark rejection', error);
       closeDatabase();
       throw error;
     }
-
-    // Re-run the full workflow to find a new artist
-    this.logger.info('Re-running workflow to find a new artist');
-    return this.execute({ forceRun: true });
   }
 
   private async filterArtistsWithSources(artists: Artist[], minSources: number): Promise<Artist[]> {
@@ -322,6 +348,13 @@ export class WorkflowOrchestrator {
     for (const artist of artists) {
       if (!artist.id) continue;
       try {
+        const drafts = await draftOps.findByArtistId(artist.id);
+        const hasPendingApproval = drafts.some((draft) => draft.status === 'sent');
+        if (hasPendingApproval) {
+          this.logger.warn(`Skipping artist ${artist.id} because there is already a sent draft awaiting approval`);
+          continue;
+        }
+
         const count = await sourceOps.countForArtist(artist.id);
         if (count >= minSources) {
           filtered.push(artist);
@@ -421,5 +454,35 @@ export class WorkflowOrchestrator {
     } catch (error) {
       this.logger.warn('Source enrichment failed (non-fatal)', error);
     }
+  }
+
+  private async queuePendingReplacementRequest(draftId: number): Promise<void> {
+    const logs = await publishingOps.findByDraftId(draftId);
+    const existingQueueLog = logs.find((log) => log.error_message === 'replacement_requested');
+    if (existingQueueLog) {
+      return;
+    }
+
+    await publishingOps.create({
+      draft_id: draftId,
+      error_message: 'replacement_requested',
+    });
+  }
+
+  private async getPendingReplacementRequests(): Promise<PendingReplacementRequest[]> {
+    const failedLogs = await publishingOps.findFailed();
+
+    return failedLogs
+      .filter((log) => log.id && log.draft_id && log.error_message === 'replacement_requested')
+      .map((log) => ({
+        logId: log.id!,
+        draftId: log.draft_id,
+        requestedAt: log.published_at ?? '',
+      }))
+      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+  }
+
+  private async clearPendingReplacementRequest(logId: number): Promise<void> {
+    await publishingOps.delete(logId);
   }
 }

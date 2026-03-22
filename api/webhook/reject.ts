@@ -2,8 +2,8 @@
  * Vercel Serverless Function - One-Click Rejection
  *
  * GET /api/webhook/reject?draft=ID&token=SECRET
- * Rejects a draft, marks the artist as rejected, and re-runs the workflow
- * to discover a new artist and send a new approval email.
+ * Rejects a draft, queues a replacement request in the database,
+ * and lets the background runner discover a new artist and send a new approval email.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -11,8 +11,8 @@ import { WorkflowOrchestrator } from '../../src/orchestrator/workflow.js';
 import { draftOps } from '../../src/db/operations/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
 
-// Allow up to 120s for the full workflow to complete
-export const maxDuration = 120;
+// Fast webhook: queue the replacement and return immediately
+export const maxDuration = 30;
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
   const draftId = Number(req.query.draft);
@@ -51,20 +51,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     closeDatabase();
 
-    // Handle rejection and re-run workflow
     console.log(`Rejecting draft ${draftId}: ${draft.title}`);
     const orchestrator = new WorkflowOrchestrator();
     const result = await orchestrator.handleRejection(draftId);
 
-    if (result.email_sent) {
-      return res.status(200).send(
-        page('Rejected — New Article Sent!', `The article about this artist was rejected. A new article has been prepared and sent to your email for review.`)
-      );
-    } else {
-      return res.status(200).send(
-        page('Rejected', `The article was rejected. ${result.errors.length > 0 ? 'However, we could not find a new artist at this time: ' + result.errors.join(', ') : 'A new article will be prepared soon.'}`)
-      );
-    }
+    return res.status(200).send(
+      page(
+        result.alreadyRejected ? 'Already Rejected' : 'Rejected',
+        'This article was rejected successfully. A replacement request has been queued, and the background runner will automatically prepare and send a new article by email.'
+      )
+    );
   } catch (error) {
     console.error('Rejection error:', error);
     closeDatabase();

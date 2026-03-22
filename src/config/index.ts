@@ -29,7 +29,7 @@ export interface EnvConfig {
   supabaseKey: string;
 
   // APIs
-  openaiApiKey: string;
+  geminiApiKey: string;
   resendApiKey: string;
   tavilyApiKey: string;
   wikimediaApiKey?: string;
@@ -61,7 +61,7 @@ function loadEnvConfig(): EnvConfig {
   const required = [
     'SUPABASE_URL',
     'SUPABASE_KEY',
-    'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
     'RESEND_API_KEY',
     'TAVILY_API_KEY',
     'APPROVAL_EMAIL',
@@ -78,7 +78,7 @@ function loadEnvConfig(): EnvConfig {
   return {
     supabaseUrl: process.env.SUPABASE_URL!,
     supabaseKey: process.env.SUPABASE_KEY!,
-    openaiApiKey: process.env.OPENAI_API_KEY!,
+    geminiApiKey: process.env.GEMINI_API_KEY!,
     resendApiKey: process.env.RESEND_API_KEY!,
     tavilyApiKey: process.env.TAVILY_API_KEY!,
     wikimediaApiKey: process.env.WIKIMEDIA_API_KEY,

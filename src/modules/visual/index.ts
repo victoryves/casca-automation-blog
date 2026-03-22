@@ -3,15 +3,15 @@
  *
  * Sources and manages images for articles using a 3-layer verification pipeline:
  * 1. Extract from verified sources (highest confidence)
- * 2. Wikimedia Commons + Claude Vision verification
- * 3. Web search + Claude Vision verification
+ * 2. Wikimedia Commons + Gemini vision verification
+ * 3. Web search + Gemini vision verification
  */
 
-import OpenAI from 'openai';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import type { Image, Source, WikimediaImage } from '../../types/index.js';
+import { GeminiClient } from '../../lib/gemini.js';
 import { ScraperBridge } from '../scraper-bridge/index.js';
 
 interface ArtistInfo {
@@ -34,12 +34,12 @@ export class VisualModule {
   private readonly imagesDir: string;
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
-  private readonly openai: OpenAI;
+  private readonly gemini: GeminiClient;
 
-  constructor(openaiApiKey: string, imagesDir = './data/images') {
+  constructor(geminiApiKey: string, imagesDir = './data/images') {
     this.imagesDir = imagesDir;
     this.scraperBridge = new ScraperBridge();
-    this.openai = new OpenAI({ apiKey: openaiApiKey });
+    this.gemini = new GeminiClient(geminiApiKey);
     this.ensureImagesDir();
   }
 
@@ -55,23 +55,24 @@ export class VisualModule {
     console.log(`\n🖼️  Sourcing verified images for ${artist.full_name}...`);
 
     const images: Image[] = [];
+    const selectedArtworkKeys = new Set<string>();
 
     // Layer 0: Extract likely artwork images directly from source HTML.
-    await this.extractDirectSourceImages(artist, sources, images, maxImages);
+    await this.extractDirectSourceImages(artist, sources, images, maxImages, selectedArtworkKeys);
 
     // Layer 1: Extract from verified sources (no Claude verification needed)
     if (images.length < maxImages) {
-      await this.extractFromVerifiedSources(artist, sources, images, maxImages);
+      await this.extractFromVerifiedSources(artist, sources, images, maxImages, selectedArtworkKeys);
     }
 
     // Layer 2: Wikimedia Commons + Claude Vision
     if (images.length < maxImages) {
-      await this.searchWikimediaVerified(artist, images, maxImages);
+      await this.searchWikimediaVerified(artist, images, maxImages, selectedArtworkKeys);
     }
 
     // Layer 3: Web search + Claude Vision
     if (images.length < maxImages) {
-      await this.searchWebVerified(artist, images, maxImages);
+      await this.searchWebVerified(artist, images, maxImages, selectedArtworkKeys);
     }
 
     console.log(`  ✓ Sourced ${images.length} verified images total`);
@@ -86,7 +87,8 @@ export class VisualModule {
     artist: ArtistInfo,
     sources: Source[],
     images: Image[],
-    maxImages: number
+    maxImages: number,
+    selectedArtworkKeys: Set<string>
   ): Promise<void> {
     const sortedSources = [...sources].sort(
       (a, b) => (b.credibility_score ?? 0) - (a.credibility_score ?? 0)
@@ -110,46 +112,60 @@ export class VisualModule {
         const candidates = this.extractImageCandidatesFromHtml(html, source.url);
         for (const candidate of candidates) {
           if (images.length >= maxImages) break;
-          if (images.some((image) => image.url === candidate.url)) continue;
-          const candidateMetadata = `${candidate.alt} ${candidate.title} ${candidate.objectTitle}`.trim();
+          const resolvedCandidates = await this.expandCandidateFromObjectPage(candidate, source.url);
 
-          if (
-            (!candidate.objectTitle.trim() && candidate.context.includes('visualizacao rapida')) ||
-            ((!candidate.objectTitle.trim() && !candidate.objectHref.trim()) &&
-              ['untitled', 'sem titulo'].includes(candidate.alt.trim().toLowerCase())) ||
-            (!candidateMetadata &&
-              !this.containsArtworkSignals(this.normalizeText(candidate.url))) ||
-            !candidate.alt.trim() &&
-            !candidate.title.trim() &&
-            !candidate.objectTitle.trim() &&
-            !candidate.objectHref.trim()
-          ) {
-            console.log(
-              `  ✗ Rejected direct-source image from ${source.institution}: Image lacks descriptive metadata and object link`
+          for (const resolvedCandidate of resolvedCandidates) {
+            if (images.length >= maxImages) break;
+            const artworkKey = this.buildArtworkKey(
+              resolvedCandidate.url,
+              resolvedCandidate.objectHref,
+              resolvedCandidate.objectTitle
             );
-            continue;
-          }
+            if (selectedArtworkKeys.has(artworkKey)) continue;
 
-          const prevalidated = await this.prevalidateSourceImage(
-            candidate.url,
-            `${candidate.url} ${candidate.context} ${source.url} ${source.institution}`,
-            true
-          );
-          if (!prevalidated.ok) {
-            console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${prevalidated.reason}`);
-            continue;
-          }
+            const candidateMetadata = `${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.objectTitle}`.trim();
 
-          const quality = await this.verifyImageWithClaude(candidate.url, artist);
-          if (quality.verified || this.isTrustedSource(source)) {
-            images.push({
-              url: candidate.url,
-              caption: `Artwork by ${artist.full_name}`,
-              attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
-            });
-            console.log(`  ✓ Added direct-source image from ${source.institution}: ${quality.reason}`);
-          } else {
-            console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${quality.reason}`);
+            if (
+              (!resolvedCandidate.objectTitle.trim() && resolvedCandidate.context.includes('visualizacao rapida')) ||
+              ((!resolvedCandidate.objectTitle.trim() && !resolvedCandidate.objectHref.trim()) &&
+                ['untitled', 'sem titulo'].includes(resolvedCandidate.alt.trim().toLowerCase())) ||
+              (!candidateMetadata &&
+                !this.containsArtworkSignals(this.normalizeText(resolvedCandidate.url))) ||
+              (!resolvedCandidate.alt.trim() &&
+                !resolvedCandidate.title.trim() &&
+                !resolvedCandidate.objectTitle.trim() &&
+                !resolvedCandidate.objectHref.trim())
+            ) {
+              console.log(
+                `  ✗ Rejected direct-source image from ${source.institution}: Image lacks descriptive metadata and object link`
+              );
+              continue;
+            }
+
+            const prevalidated = await this.prevalidateSourceImage(
+              resolvedCandidate.url,
+              `${resolvedCandidate.url} ${resolvedCandidate.context} ${source.url} ${source.institution} ${source.content_summary ?? ''}`,
+              true,
+              true
+            );
+            if (!prevalidated.ok) {
+              console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${prevalidated.reason}`);
+              continue;
+            }
+
+            const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
+            if (quality.verified) {
+              images.push({
+                url: resolvedCandidate.url,
+                caption: resolvedCandidate.objectTitle || resolvedCandidate.alt || `Artwork by ${artist.full_name}`,
+                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
+              });
+              selectedArtworkKeys.add(artworkKey);
+              console.log(`  ✓ Added direct-source image from ${source.institution}: ${quality.reason}`);
+              break;
+            } else {
+              console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${quality.reason}`);
+            }
           }
         }
       } catch (error) {
@@ -165,7 +181,8 @@ export class VisualModule {
     artist: ArtistInfo,
     sources: Source[],
     images: Image[],
-    maxImages: number
+    maxImages: number,
+    selectedArtworkKeys: Set<string>
   ): Promise<void> {
     const scraperAvailable = await this.scraperBridge.isAvailable();
     if (!scraperAvailable) {
@@ -188,11 +205,14 @@ export class VisualModule {
         if (result.success && result.images.length > 0) {
           for (const img of result.images) {
             if (images.length >= maxImages) break;
-            if (images.some((image) => image.url === img.url)) continue;
+            const normalizedUrl = this.normalizeImageUrl(img.url);
+            const artworkKey = this.buildArtworkKey(normalizedUrl, img.source_page, img.alt);
+            if (selectedArtworkKeys.has(artworkKey)) continue;
 
             const prevalidated = await this.prevalidateSourceImage(
-              img.url,
-              `${img.url} ${img.alt} ${source.url} ${source.institution}`,
+              normalizedUrl,
+              `${normalizedUrl} ${img.alt} ${source.url} ${source.institution} ${source.content_summary ?? ''}`,
+              true,
               true
             );
             if (!prevalidated.ok) {
@@ -201,13 +221,14 @@ export class VisualModule {
             }
 
             // Even verified sources need quality check (could be banners/thumbnails)
-            const quality = await this.verifyImageWithClaude(img.url, artist);
-            if (quality.verified || this.isTrustedSource(source)) {
+            const quality = await this.verifyImageWithClaude(normalizedUrl, artist);
+            if (quality.verified) {
               images.push({
-                url: img.url,
+                url: normalizedUrl,
                 caption: img.alt || `Artwork by ${artist.full_name}`,
                 attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
               });
+              selectedArtworkKeys.add(artworkKey);
               console.log(`  ✓ Added verified image from ${source.institution}: ${quality.reason}`);
             } else {
               console.log(`  ✗ Rejected from ${source.institution}: ${quality.reason}`);
@@ -226,7 +247,8 @@ export class VisualModule {
   private async searchWikimediaVerified(
     artist: ArtistInfo,
     images: Image[],
-    maxImages: number
+    maxImages: number,
+    selectedArtworkKeys: Set<string>
   ): Promise<void> {
     const query = this.buildSearchQuery(artist);
     console.log(`  Searching Wikimedia: "${query}"`);
@@ -236,6 +258,8 @@ export class VisualModule {
 
     for (const wikiImage of wikimediaImages) {
       if (images.length >= maxImages) break;
+      const artworkKey = this.buildArtworkKey(wikiImage.url, wikiImage.url, wikiImage.title ?? wikiImage.description);
+      if (selectedArtworkKeys.has(artworkKey)) continue;
 
       const verification = await this.verifyImageWithClaude(wikiImage.url, artist);
       if (verification.verified) {
@@ -244,6 +268,7 @@ export class VisualModule {
           caption: wikiImage.description ?? `Artwork by ${artist.full_name}`,
           attribution: this.generateAttribution(wikiImage),
         });
+        selectedArtworkKeys.add(artworkKey);
         console.log(`  ✓ Wikimedia image verified: ${verification.reason}`);
       } else {
         console.log(`  ✗ Wikimedia image rejected: ${verification.reason}`);
@@ -257,7 +282,8 @@ export class VisualModule {
   private async searchWebVerified(
     artist: ArtistInfo,
     images: Image[],
-    maxImages: number
+    maxImages: number,
+    selectedArtworkKeys: Set<string>
   ): Promise<void> {
     const scraperAvailable = await this.scraperBridge.isAvailable();
     if (!scraperAvailable) {
@@ -279,11 +305,13 @@ export class VisualModule {
 
     for (const img of searchResult.images) {
       if (images.length >= maxImages) break;
-      if (images.some((image) => image.url === img.url)) continue;
+      const normalizedUrl = this.normalizeImageUrl(img.url);
+      const artworkKey = this.buildArtworkKey(normalizedUrl, img.source_page, img.caption);
+      if (selectedArtworkKeys.has(artworkKey)) continue;
 
       const prevalidated = await this.prevalidateSourceImage(
-        img.url,
-        `${img.url} ${img.caption ?? ''} ${img.source_page ?? ''}`,
+        normalizedUrl,
+        `${normalizedUrl} ${img.caption ?? ''} ${img.source_page ?? ''}`,
         true
       );
       if (!prevalidated.ok) {
@@ -291,13 +319,14 @@ export class VisualModule {
         continue;
       }
 
-      const verification = await this.verifyImageWithClaude(img.url, artist);
+      const verification = await this.verifyImageWithClaude(normalizedUrl, artist);
       if (verification.verified) {
         images.push({
-          url: img.url,
+          url: normalizedUrl,
           caption: img.caption || `Artwork by ${artist.full_name}`,
-          attribution: `Verified via Claude Vision. Educational use.`,
+          attribution: `Verified via Gemini vision. Educational use.`,
         });
+        selectedArtworkKeys.add(artworkKey);
         console.log(`  ✓ Web image verified: ${verification.reason}`);
       } else {
         console.log(`  ✗ Web image rejected: ${verification.reason}`);
@@ -306,14 +335,45 @@ export class VisualModule {
   }
 
   private isTrustedSource(source: Source): boolean {
-    return (source.credibility_score ?? 0) >= 0.9;
+    try {
+      const hostname = new URL(source.url).hostname.toLowerCase();
+      const trustedHosts = [
+        'wikipedia.org',
+        'wikimedia.org',
+        'itaucultural.org.br',
+        'moma.org',
+        'tate.org.uk',
+        'masp.org.br',
+        'pinacoteca.org.br',
+        'enciclopedia.itaucultural.org.br',
+        'escritoriodearte.com',
+      ];
+
+      const hostTrusted = trustedHosts.some(
+        (trustedHost) => hostname === trustedHost || hostname.endsWith(`.${trustedHost}`)
+      );
+
+      return hostTrusted && (source.credibility_score ?? 0) >= 0.9;
+    } catch {
+      return false;
+    }
   }
 
   private async prevalidateSourceImage(
     url: string,
     contextText = '',
-    requireArtworkSignal = false
+    requireArtworkSignal = false,
+    allowSourceContextFallback = false
   ): Promise<{ ok: boolean; reason: string }> {
+    if (this.isStrongArtworkAssetUrl(url)) {
+      const imageData = await this.downloadImageAsBase64(url);
+      if (!imageData) {
+        return { ok: false, reason: 'Could not download image for validation' };
+      }
+
+      return { ok: true, reason: 'Proceeding based on strong artwork asset URL' };
+    }
+
     if (this.isBlockedImageHost(url)) {
       return { ok: false, reason: 'Image host is too risky for approval emails' };
     }
@@ -330,6 +390,9 @@ export class VisualModule {
     }
 
     if (requireArtworkSignal && !this.containsArtworkSignals(normalizedContext)) {
+      if (allowSourceContextFallback) {
+        return { ok: true, reason: 'Proceeding to visual verification based on trusted source context' };
+      }
       return { ok: false, reason: 'No strong artwork signal found in caption or source context' };
     }
 
@@ -368,13 +431,6 @@ export class VisualModule {
       'evento',
       'festival',
       'opening',
-      'xilogravura em papel',
-      'gravura em papel',
-      'print on paper',
-      'woodcut print on paper',
-      'paper print',
-      'printed paper',
-      'papel impresso',
       'program',
       'programa',
       'registration',
@@ -393,7 +449,6 @@ export class VisualModule {
       'preco',
       'cart',
       'carrinho',
-      'quadro',
       'quadrinho',
       'tile',
       'tiles',
@@ -515,6 +570,68 @@ export class VisualModule {
     }
   }
 
+  private isStrongArtworkAssetUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      const pathname = parsed.pathname.toLowerCase();
+
+      if (
+        (hostname === 'www.escritoriodearte.com' || hostname.endsWith('.escritoriodearte.com')) &&
+        pathname.includes('/quadro/') &&
+        /\.(jpg|jpeg|png|webp)$/.test(pathname)
+      ) {
+        return true;
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private buildArtworkKey(url: string, objectHref = '', label = ''): string {
+    const normalizedUrl = this.normalizeImageUrl(url);
+
+    try {
+      const parsed = new URL(normalizedUrl);
+      const hostname = parsed.hostname.toLowerCase();
+      let pathname = parsed.pathname.toLowerCase();
+
+      if (
+        (hostname === 'www.escritoriodearte.com' || hostname.endsWith('.escritoriodearte.com')) &&
+        pathname.includes('/quadro/')
+      ) {
+        pathname = pathname.replace(/([a-z0-9-]+?)[pg]\.(jpg|jpeg|png|webp)$/i, '$1.$2');
+      }
+
+      const urlKey = `url:${hostname}${pathname}`;
+
+      if (objectHref) {
+        try {
+          const objectUrl = new URL(objectHref);
+          const objectPath = objectUrl.pathname.toLowerCase();
+          const isGenericListingPage =
+            objectPath.includes('/artista/') ||
+            objectPath.includes('/pessoas/') ||
+            objectPath === '/' ||
+            objectPath === '';
+
+          if (!isGenericListingPage) {
+            return `object:${objectUrl.toString().toLowerCase()}`;
+          }
+        } catch {
+          // Ignore malformed object URL and keep URL-based key.
+        }
+      }
+
+      return urlKey;
+    } catch {
+      const normalizedLabel = this.normalizeText(label).replace(/\s+/g, ' ').trim();
+      return `label:${normalizedLabel || normalizedUrl.toLowerCase()}`;
+    }
+  }
+
   private normalizeText(value: string): string {
     return value
       .normalize('NFD')
@@ -609,6 +726,13 @@ export class VisualModule {
 
   private normalizeImageUrl(url: string): string {
     try {
+      const escritoriodearteLarge = url.match(
+        /^https:\/\/www\.escritoriodearte\.com\/quadro\/(.+?)p\.(jpg|jpeg|png|webp)(\?.*)?$/i
+      );
+      if (escritoriodearteLarge?.[1] && escritoriodearteLarge?.[2]) {
+        return `https://www.escritoriodearte.com/quadro/${escritoriodearteLarge[1]}g.${escritoriodearteLarge[2]}`;
+      }
+
       const wixMatch = url.match(
         /^https:\/\/static\.wixstatic\.com\/media\/([^/]+\.(?:jpg|jpeg|png|webp))(?:\/v1\/fill\/[^?]+)?(?:\?.*)?$/i
       );
@@ -620,6 +744,109 @@ export class VisualModule {
     } catch {
       return url;
     }
+  }
+
+  private async expandCandidateFromObjectPage(
+    candidate: DirectImageCandidate,
+    sourceUrl: string
+  ): Promise<DirectImageCandidate[]> {
+    const expanded: DirectImageCandidate[] = [];
+    const seen = new Set<string>();
+    const pushUnique = (entry: DirectImageCandidate): void => {
+      const entryKey = this.buildArtworkKey(entry.url, entry.objectHref, entry.objectTitle || entry.alt);
+      if (seen.has(entryKey)) return;
+      seen.add(entryKey);
+      expanded.push(entry);
+    };
+
+    if (candidate.objectHref) {
+      try {
+        const objectUrl = new URL(candidate.objectHref, sourceUrl).toString();
+        const response = await axios.get(objectUrl, {
+          timeout: 15000,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          },
+        });
+
+        const html = typeof response.data === 'string' ? response.data : '';
+        if (html) {
+          const pageTitle =
+            this.extractMetaContent(html, 'property', 'og:title') ||
+            this.extractMetaContent(html, 'name', 'twitter:title') ||
+            candidate.objectTitle ||
+            candidate.alt;
+
+          const pageDescription =
+            this.extractMetaContent(html, 'property', 'og:description') ||
+            this.extractMetaContent(html, 'name', 'description') ||
+            candidate.context;
+
+          const ogImage =
+            this.extractMetaContent(html, 'property', 'og:image') ||
+            this.extractMetaContent(html, 'name', 'twitter:image');
+
+          if (ogImage) {
+            pushUnique({
+              url: this.normalizeImageUrl(new URL(ogImage, objectUrl).toString()),
+              context: `${candidate.context} ${pageTitle} ${pageDescription} ${objectUrl}`.trim(),
+              alt: candidate.alt,
+              title: candidate.title || pageTitle,
+              objectTitle: candidate.objectTitle || pageTitle,
+              objectHref: objectUrl,
+            });
+          }
+
+          const pageCandidates = this.extractImageCandidatesFromHtml(html, objectUrl)
+            .filter((entry) => !this.isLikelyUiAsset(entry.url))
+            .slice(0, 6);
+
+          for (const pageCandidate of pageCandidates) {
+            pushUnique({
+              ...pageCandidate,
+              context: `${candidate.context} ${pageTitle} ${pageDescription} ${pageCandidate.context}`.trim(),
+              objectTitle: pageCandidate.objectTitle || candidate.objectTitle || pageTitle,
+              objectHref: objectUrl,
+            });
+          }
+        }
+      } catch {
+        // Keep original candidate if object page cannot be fetched.
+      }
+    }
+
+    pushUnique(candidate);
+    return expanded;
+  }
+
+  private extractMetaContent(html: string, attrName: string, attrValue: string): string {
+    const patterns = [
+      new RegExp(`<meta[^>]+${attrName}=["']${attrValue}["'][^>]+content=["']([^"']+)["']`, 'i'),
+      new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+${attrName}=["']${attrValue}["']`, 'i'),
+    ];
+
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        return match[1].trim();
+      }
+    }
+
+    return '';
+  }
+
+  private isLikelyUiAsset(url: string): boolean {
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('logo') ||
+      lower.includes('icon') ||
+      lower.includes('avatar') ||
+      lower.includes('profile') ||
+      lower.includes('thumb') ||
+      lower.includes('banner') ||
+      lower.includes('sprite')
+    );
   }
 
   private extractAttribute(tag: string, attribute: string): string | null {
@@ -640,7 +867,7 @@ export class VisualModule {
   }
 
   /**
-   * Verify an image belongs to the artist using OpenAI Vision (GPT-4o).
+   * Verify an image belongs to the artist using Gemini vision.
    * Fail-safe: on error, rejects the image.
    */
   private async verifyImageWithClaude(
@@ -659,24 +886,18 @@ export class VisualModule {
         ? ` Based in ${artist.birthplace_city}${artist.birthplace_state ? `, ${artist.birthplace_state}` : ''}.`
         : '';
 
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
-        max_tokens: 200,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:${imageData.mediaType};base64,${imageData.base64}`,
-                },
-              },
-              {
-                type: 'text',
-                text: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
+      const text = await this.gemini.generateTextFromImage({
+        model: 'gemini-2.5-flash',
+        maxOutputTokens: 200,
+        temperature: 0,
+        imageBase64: imageData.base64,
+        mimeType: imageData.mediaType,
+        prompt: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
 
-Answer with a JSON object: {"verified": true/false, "reason": "brief explanation"}
+Reply with exactly one line in this format:
+VERIFIED|brief explanation
+or
+REJECTED|brief explanation
 
 Verify ALL of these criteria (reject if ANY fails):
 1. ARTWORK: This must be an artwork (painting, print, woodcut print, etc.), not a photo of a person, UI element, logo, or banner.
@@ -700,25 +921,28 @@ Verify ALL of these criteria (reject if ANY fails):
 6. HIGH RESOLUTION AND SHARP: The image must be crisp with clearly visible fine details and textures. REJECT if the image looks soft, fuzzy, compressed, low-resolution, or if you cannot make out fine lines and details clearly.
 
 When in doubt on any criterion, say false.`,
-              },
-            ],
-          },
-        ],
       });
 
-      const text = response.choices[0]?.message?.content || '';
-      const jsonMatch = text.match(/\{[^}]+\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      const normalized = text.trim().replace(/\s+/g, ' ');
+      const verifiedMatch = normalized.match(/^VERIFIED\|(.*)$/i);
+      if (verifiedMatch) {
         return {
-          verified: parsed.verified === true,
-          reason: parsed.reason || 'No reason given',
+          verified: true,
+          reason: verifiedMatch[1]?.trim() || 'Verified by Gemini vision',
         };
       }
 
-      return { verified: false, reason: 'Could not parse verification response' };
+      const rejectedMatch = normalized.match(/^REJECTED\|(.*)$/i);
+      if (rejectedMatch) {
+        return {
+          verified: false,
+          reason: rejectedMatch[1]?.trim() || 'Rejected by Gemini vision',
+        };
+      }
+
+      return { verified: false, reason: `Could not parse verification response: ${normalized.slice(0, 120)}` };
     } catch (error) {
-      console.warn(`  OpenAI Vision verification failed for ${imageUrl}:`, error);
+      console.warn(`  Gemini vision verification failed for ${imageUrl}:`, error);
       return { verified: false, reason: 'Verification error — rejected for safety' };
     }
   }
@@ -740,8 +964,8 @@ When in doubt on any criterion, say false.`,
 
       // Reject very small files (< 40KB — likely low-res, thumbnails, or icons)
       const buffer = Buffer.from(response.data);
-      if (buffer.length < 40_000) {
-        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 40KB)`);
+      if (buffer.length < 15_000) {
+        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 15KB)`);
         return null;
       }
 

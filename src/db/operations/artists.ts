@@ -139,6 +139,22 @@ export const artistOps = {
   },
 
   /**
+   * Update artist metadata JSON
+   */
+  async updateMetadata(id: number, metadata: Record<string, unknown> | null): Promise<void> {
+    const supabase = getSupabase();
+
+    const { error } = await supabase
+      .from('artists')
+      .update({ metadata: metadata ? JSON.stringify(metadata) : null })
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`Failed to update artist metadata: ${error.message}`);
+    }
+  },
+
+  /**
    * Delete artist
    */
   async delete(id: number): Promise<void> {

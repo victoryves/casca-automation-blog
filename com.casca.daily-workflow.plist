@@ -14,9 +14,9 @@
     <key>WorkingDirectory</key>
     <string>/Users/victoryves/casca-automation-blog-runner</string>
 
-    <!-- Retry hourly until one daily article is successfully sent -->
+    <!-- Check every 15 minutes so queued rejections are processed promptly -->
     <key>StartInterval</key>
-    <integer>3600</integer>
+    <integer>900</integer>
 
     <!-- Run on load too (catches missed runs after sleep/reboot) -->
     <key>RunAtLoad</key>
