@@ -124,6 +124,7 @@ export class VisualModule {
             if (selectedArtworkKeys.has(artworkKey)) continue;
 
             const candidateMetadata = `${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.objectTitle}`.trim();
+            const chosenLabel = resolvedCandidate.objectTitle || resolvedCandidate.alt || resolvedCandidate.title;
 
             if (
               (!resolvedCandidate.objectTitle.trim() && resolvedCandidate.context.includes('visualizacao rapida')) ||
@@ -142,6 +143,13 @@ export class VisualModule {
               continue;
             }
 
+            if (!this.isMeaningfulArtworkLabel(chosenLabel, resolvedCandidate.context, resolvedCandidate.objectHref)) {
+              console.log(
+                `  ✗ Rejected direct-source image from ${source.institution}: Candidate lacks a specific artwork title or object description`
+              );
+              continue;
+            }
+
             const prevalidated = await this.prevalidateSourceImage(
               resolvedCandidate.url,
               `${resolvedCandidate.url} ${resolvedCandidate.context} ${source.url} ${source.institution} ${source.content_summary ?? ''}`,
@@ -154,10 +162,10 @@ export class VisualModule {
             }
 
             const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
-            if (quality.verified) {
+            if (quality.verified && !this.isNegativeVerificationReason(quality.reason)) {
               images.push({
                 url: resolvedCandidate.url,
-                caption: resolvedCandidate.objectTitle || resolvedCandidate.alt || `Artwork by ${artist.full_name}`,
+                caption: chosenLabel || `Artwork by ${artist.full_name}`,
                 attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
               });
               selectedArtworkKeys.add(artworkKey);
@@ -320,7 +328,7 @@ export class VisualModule {
       }
 
       const verification = await this.verifyImageWithClaude(normalizedUrl, artist);
-      if (verification.verified) {
+      if (verification.verified && !this.isNegativeVerificationReason(verification.reason)) {
         images.push({
           url: normalizedUrl,
           caption: img.caption || `Artwork by ${artist.full_name}`,
@@ -542,6 +550,111 @@ export class VisualModule {
     ];
 
     return artworkSignals.some((signal) => text.includes(signal));
+  }
+
+  private isMeaningfulArtworkLabel(label: string, context = '', objectHref = ''): boolean {
+    const cleanedLabel = label.replace(/["'`]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const normalizedLabel = this.normalizeText(cleanedLabel).replace(/\s+/g, ' ').trim();
+    const normalizedContext = this.normalizeText(context).replace(/\s+/g, ' ').trim();
+    const normalizedHref = this.normalizeText(objectHref);
+
+    if (normalizedLabel.length >= 6) {
+      const blockedGenericLabels = [
+        'hoje',
+        'today',
+        'obra',
+        'artwork',
+        'work',
+        'image',
+        'imagem',
+        'foto',
+        'photo',
+        'sem titulo',
+        'untitled',
+        'sem titulo i',
+        'sem titulo ii',
+        'centro de arte',
+        'museu',
+        'museum',
+        'instituto',
+        'itau cultural',
+        'galeria',
+        'gallery',
+        'acervo',
+        'colecao',
+        'collection',
+        'exposicao',
+        'exhibition',
+        'untitled work',
+        'obra sem titulo',
+      ];
+
+      const looksGeneric = blockedGenericLabels.some(
+        (blocked) => normalizedLabel === blocked || normalizedLabel.startsWith(`${blocked} `)
+      );
+
+      if (!looksGeneric && !this.containsNonArtworkSignals(normalizedLabel)) {
+        return true;
+      }
+    }
+
+    const hasSpecificObjectLink =
+      normalizedHref.length > 0 &&
+      !normalizedHref.includes('/pessoas/') &&
+      !normalizedHref.includes('/artista/') &&
+      !normalizedHref.endsWith('/');
+
+    return (
+      cleanedLabel.length >= 8 &&
+      hasSpecificObjectLink &&
+      this.containsArtworkSignals(normalizedContext) &&
+      !this.containsNonArtworkSignals(normalizedContext)
+    );
+  }
+
+  private isNegativeVerificationReason(reason: string): boolean {
+    const normalizedReason = this.normalizeText(reason);
+    const negativeSignals = [
+      'not an artwork',
+      'photo of a person',
+      'photograph of a person',
+      'portrait',
+      'author photo',
+      'artist photo',
+      'book cover',
+      'catalog',
+      'poster',
+      'flyer',
+      'logo',
+      'banner',
+      'ui element',
+      'mockup',
+      'frame',
+      'framed',
+      'gallery wall',
+      'room around the artwork',
+      'physical object',
+      'wooden block',
+      'matrix',
+      'wide white margins',
+      'numbering',
+      'signature',
+      'low-resolution',
+      'low resolution',
+      'fuzzy',
+      'soft',
+      'blurry',
+      'compressed',
+      'cannot confirm',
+      'cant confirm',
+      'cannot verify',
+      'wrong artist',
+      'does not match',
+      'appears to be',
+      'looks like',
+    ];
+
+    return negativeSignals.some((signal) => normalizedReason.includes(signal));
   }
 
   private isBlockedImageHost(url: string): boolean {
@@ -962,10 +1075,10 @@ When in doubt on any criterion, say false.`,
         },
       });
 
-      // Reject very small files (< 40KB — likely low-res, thumbnails, or icons)
+      // Reject very small files (< 25KB — likely low-res, thumbnails, or icons)
       const buffer = Buffer.from(response.data);
-      if (buffer.length < 15_000) {
-        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 15KB)`);
+      if (buffer.length < 25_000) {
+        console.log(`  Skipped ${url} — file too small (${(buffer.length / 1024).toFixed(0)}KB, min 25KB)`);
         return null;
       }
 

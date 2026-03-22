@@ -5,15 +5,13 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { getConfig } from '../config/index.js';
 
 let supabase: SupabaseClient | null = null;
 
 export function getSupabase(): SupabaseClient {
   if (!supabase) {
-    const config = getConfig();
-    const supabaseUrl = config.env.supabaseUrl;
-    const supabaseKey = config.env.supabaseKey;
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
       throw new Error('Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_KEY environment variables.');
