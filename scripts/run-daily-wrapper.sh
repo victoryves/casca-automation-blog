@@ -54,29 +54,31 @@ log "Node: $(node --version) | npm: $(npm --version)"
 log "Timezone: $APP_TIMEZONE"
 log "========================================"
 
-# Retry logic: try up to 3 times with 60s between attempts
-MAX_RETRIES=3
+# Persistent retry logic: keep going until an email is sent or one was already sent today.
+ATTEMPT=0
 RETRY_DELAY=60
+LONG_RETRY_DELAY=300
 
-for attempt in $(seq 1 $MAX_RETRIES); do
-  log "Attempt $attempt/$MAX_RETRIES"
+while true; do
+  ATTEMPT=$((ATTEMPT + 1))
+  log "Attempt $ATTEMPT"
 
   npm run daily >> "$LOG_FILE" 2>&1
   EXIT_CODE=$?
 
   if [ $EXIT_CODE -eq 0 ]; then
-    log "SUCCESS (attempt $attempt)"
+    log "SUCCESS (attempt $ATTEMPT)"
     exit 0
   fi
 
   log "FAILED with exit code $EXIT_CODE"
 
-  if [ $attempt -lt $MAX_RETRIES ]; then
-    log "Retrying in ${RETRY_DELAY}s..."
+  if [ $EXIT_CODE -eq 2 ]; then
+    log "Workflow found no approval-ready artist yet. Continuing search in ${RETRY_DELAY}s..."
     sleep $RETRY_DELAY
+    continue
   fi
+
+  log "Transient or fatal workflow error. Retrying in ${LONG_RETRY_DELAY}s..."
+  sleep $LONG_RETRY_DELAY
 done
-
-log "ALL $MAX_RETRIES ATTEMPTS FAILED"
-
-exit 1

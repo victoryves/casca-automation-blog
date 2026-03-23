@@ -4,6 +4,8 @@
  * Main entry point for artist discovery functionality.
  */
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { TavilyClient } from './tavily-client.js';
 import { CandidateExtractor } from './candidate-extractor.js';
 import { SEED_ARTISTS, type SeedArtist } from './seed-artists.js';
@@ -56,6 +58,10 @@ export class DiscoveryModule {
     }
 
     const existingNames = await this.loadExistingArtistNames();
+    const failedTodayNames = await this.loadFailedArtistNamesForToday(config.env.appTimezone);
+    for (const failedName of failedTodayNames) {
+      existingNames.add(failedName);
+    }
 
     // 1) Seed list: name-first discovery (primary strategy)
     await this.discoverFromSeedList({
@@ -266,6 +272,32 @@ export class DiscoveryModule {
     return new Set(existing.map((artist) => this.normalizeName(artist.full_name)));
   }
 
+  private async loadFailedArtistNamesForToday(appTimezone?: string): Promise<Set<string>> {
+    try {
+      const workflowDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: appTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+      const filePath = path.join(process.cwd(), 'logs', 'daily', `failed-artists-${workflowDate}.json`);
+      const content = await fs.readFile(filePath, 'utf8');
+      const parsed = JSON.parse(content);
+
+      if (!Array.isArray(parsed)) {
+        return new Set<string>();
+      }
+
+      return new Set(
+        parsed
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .map((value) => this.normalizeName(value))
+      );
+    } catch {
+      return new Set<string>();
+    }
+  }
+
   private resolveStates(stateCodes?: string): string[] {
     if (!stateCodes) return [];
     const codes = stateCodes
@@ -313,6 +345,10 @@ export class DiscoveryModule {
       this.buildQuery(base, 'biografia', primaryState),
       this.buildQuery(base, 'artista visual', 'Nordeste'),
       this.buildQuery(base, practiceHints[1] ?? practiceHints[0], primaryState),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:dailyartfair.com`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:mutualart.com`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:artsy.net`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:wikiart.org`),
       this.buildQuery(base, 'site:enciclopedia.itaucultural.org.br'),
       this.buildQuery(base, 'site:wikipedia.org'),
       this.buildQuery(base, 'site:wikidata.org'),
@@ -428,9 +464,12 @@ export class DiscoveryModule {
           strongMatch,
         };
       })
-      .filter((item) => item.strongMatch);
+      .filter((item) => item.strongMatch && !this.isBlockedDiscoverySource(item.result.url));
 
     scored.sort((a, b) => {
+      const preferredDelta =
+        this.getArtworkSourcePriority(b.result.url) - this.getArtworkSourcePriority(a.result.url);
+      if (preferredDelta !== 0) return preferredDelta;
       if (b.credibility !== a.credibility) return b.credibility - a.credibility;
       if (b.matchBoost !== a.matchBoost) return b.matchBoost - a.matchBoost;
       return (b.result.score ?? 0) - (a.result.score ?? 0);
@@ -481,6 +520,9 @@ export class DiscoveryModule {
 
     const domain = this.safeDomain(url);
     if (domain) {
+      if (domain.includes('dailyartfair.com')) return 0.86;
+      if (domain.includes('mutualart.com')) return 0.82;
+      if (domain.includes('wikiart.org')) return 0.8;
       if (domain.endsWith('.gov.br') || domain.endsWith('.edu.br')) return 0.9;
       if (domain.endsWith('.org.br') || domain.endsWith('.org')) return 0.75;
       if (domain.endsWith('.com.br')) return 0.65;
@@ -501,6 +543,35 @@ export class DiscoveryModule {
     } catch {
       return null;
     }
+  }
+
+  private isBlockedDiscoverySource(url: string): boolean {
+    const domain = this.safeDomain(url);
+    if (!domain) return false;
+
+    return [
+      'instagram.com',
+      'facebook.com',
+      'tiktok.com',
+      'x.com',
+      'twitter.com',
+      'pinterest.com',
+      'blogspot.com',
+      'youtube.com',
+    ].some((blocked) => domain === blocked || domain.endsWith(`.${blocked}`));
+  }
+
+  private getArtworkSourcePriority(url: string): number {
+    const domain = this.safeDomain(url) ?? '';
+
+    if (domain.includes('dailyartfair.com')) return 5;
+    if (domain.includes('enciclopedia.itaucultural.org.br')) return 4;
+    if (domain.includes('mutualart.com')) return 3;
+    if (domain.includes('wikiart.org')) return 3;
+    if (domain.endsWith('.gov.br') || domain.endsWith('.edu.br') || domain.endsWith('.org.br')) return 2;
+    if (domain.includes('wikipedia.org') || domain.includes('wikimedia.org')) return 1;
+
+    return 0;
   }
 
   private matchScore(result: TavilySearchResult, artistName: string): number {

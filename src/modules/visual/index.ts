@@ -797,6 +797,15 @@ export class VisualModule {
   private extractImageCandidatesFromHtml(html: string, sourceUrl: string): DirectImageCandidate[] {
     const candidates: DirectImageCandidate[] = [];
     const seen = new Set<string>();
+    const specializedCandidates = this.extractSourceSpecificCandidates(html, sourceUrl);
+
+    for (const candidate of specializedCandidates) {
+      const key = this.buildArtworkKey(candidate.url, candidate.objectHref, candidate.objectTitle || candidate.alt);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(candidate);
+    }
+
     const imgTagPattern = /<img\b[^>]*>/gi;
 
     for (const match of html.matchAll(imgTagPattern)) {
@@ -841,6 +850,66 @@ export class VisualModule {
     return candidates.slice(0, 12);
   }
 
+  private extractSourceSpecificCandidates(html: string, sourceUrl: string): DirectImageCandidate[] {
+    try {
+      const hostname = new URL(sourceUrl).hostname.toLowerCase();
+
+      if (hostname === 'dailyartfair.com' || hostname.endsWith('.dailyartfair.com')) {
+        return this.extractDailyArtFairCandidates(html, sourceUrl);
+      }
+    } catch {
+      // Ignore malformed source URL and fall back to generic extraction.
+    }
+
+    return [];
+  }
+
+  private extractDailyArtFairCandidates(html: string, sourceUrl: string): DirectImageCandidate[] {
+    const candidates: DirectImageCandidate[] = [];
+    const seen = new Set<string>();
+    const blockPattern = /<div class="img-artwork"[\s\S]*?<\/div>\s*<!-- img-artworks -->/gi;
+
+    for (const match of html.matchAll(blockPattern)) {
+      const block = match[0];
+      const imagePath =
+        this.extractSnippetValue(block, /<img[^>]+class="thumb"[^>]+src="([^"]+)"/i) ||
+        this.extractSnippetValue(block, /<img[^>]+class='thumb'[^>]+src='([^']+)'/i);
+      if (!imagePath) continue;
+
+      const title =
+        this.extractSnippetValue(block, /<h4 class="titreoeuvre">([^<]+)<\/h4>/i) ||
+        this.extractSnippetValue(block, /title="([^"]+)"/i);
+      const medium = this.cleanHtml(this.extractSnippetValue(block, /<h6 class="teknic">([\s\S]*?)<\/h6>/i))
+        .replace(/\s+/g, ' ')
+        .trim();
+      const alt =
+        this.extractSnippetValue(block, /alt="([^"]+)"/i) ||
+        this.extractSnippetValue(block, /title="([^"]+)"/i);
+      const eventHref =
+        this.extractSnippetValue(block, /<a href="([^"]+)" class="go_to_event"/i) ||
+        sourceUrl;
+      const gallery = this.extractSnippetValue(block, /<h4 class="artowork-gallery">([^<]+)<\/h4>/i);
+
+      const absoluteImageUrl = this.normalizeImageUrl(new URL(imagePath, sourceUrl).toString());
+      const objectTitle = title || alt;
+      const context = [objectTitle, medium, gallery, eventHref].filter(Boolean).join(' ');
+      const entry: DirectImageCandidate = {
+        url: absoluteImageUrl,
+        context,
+        alt,
+        title: objectTitle,
+        objectTitle,
+        objectHref: eventHref,
+      };
+      const key = this.buildArtworkKey(entry.url, entry.objectHref, entry.objectTitle || entry.alt);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(entry);
+    }
+
+    return candidates;
+  }
+
   private pushImageCandidate(
     candidates: DirectImageCandidate[],
     seen: Set<string>,
@@ -881,6 +950,13 @@ export class VisualModule {
 
   private normalizeImageUrl(url: string): string {
     try {
+      const dailyArtFairLarge = url.match(
+        /^https:\/\/dailyartfair\.com\/upload\/(?:small|medium)\/([^/?#]+\.(?:jpg|jpeg|png|webp))(?:\?.*)?$/i
+      );
+      if (dailyArtFairLarge?.[1]) {
+        return `https://dailyartfair.com/upload/large/${dailyArtFairLarge[1]}`;
+      }
+
       const escritoriodearteLarge = url.match(
         /^https:\/\/www\.escritoriodearte\.com\/quadro\/(.+?)p\.(jpg|jpeg|png|webp)(\?.*)?$/i
       );

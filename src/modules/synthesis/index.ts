@@ -171,7 +171,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
     // Fallback if parsing fails
     if (!title) {
-      title = `Inside the World of ${artist.full_name}`;
+      title = this.buildSpecificFallbackTitle(artist);
     }
     if (!subtitle) {
       subtitle = 'A visual artist from Northeast Brazil';
@@ -183,6 +183,8 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     if (!this.titleIncludesArtistName(title, artist.full_name)) {
       title = `${artist.full_name}: ${title}`;
     }
+
+    title = this.upgradeWeakTitle(title, artist);
 
     return {
       title,
@@ -215,7 +217,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     const closing = `For readers discovering ${artist.full_name} for the first time, the essential takeaway is clear: this is an artist worth following more closely, both for the work itself and for what it reveals about the depth of contemporary art from Northeast Brazil.`;
 
     return {
-      title: `Why ${artist.full_name} Is Worth Watching`,
+      title: this.buildSpecificFallbackTitle(artist),
       subtitle: `${artist.full_name}'s work connects ${place || 'Northeast Brazil'} to a wider conversation in contemporary art.`,
       content: `${intro}\n\n${body}\n\n${closing}`,
       keywords: [artist.full_name, 'Brazilian art', 'Northeast Brazil'],
@@ -239,6 +241,58 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase();
+  }
+
+  private upgradeWeakTitle(title: string, artist: Artist): string {
+    const normalizedTitle = this.normalizeText(title);
+    const weakPatterns = [
+      'worth watching',
+      'worth knowing',
+      'inside the world of',
+      'beyond the gaze',
+      'the alchemist of colors',
+      'the alchemist of colour',
+      'incredible',
+      'visionary',
+      'genius',
+      'masterpiece',
+      'masterpieces',
+    ];
+
+    if (weakPatterns.some((pattern) => normalizedTitle.includes(pattern))) {
+      return this.buildSpecificFallbackTitle(artist);
+    }
+
+    return title;
+  }
+
+  private buildSpecificFallbackTitle(artist: Artist): string {
+    const name = artist.full_name;
+    const practice = this.normalizeText(artist.visual_practice ?? '');
+
+    if (practice.includes('pint')) {
+      return `${name} and the Force of Paint`;
+    }
+    if (practice.includes('escult')) {
+      return `${name} and the Sacred Language of Sculpture`;
+    }
+    if (practice.includes('xilo') || practice.includes('gravur') || practice.includes('woodcut') || practice.includes('print')) {
+      return `${name} and the Graphic Power of Print`;
+    }
+    if (practice.includes('fot')) {
+      return `${name} and the Politics of the Image`;
+    }
+    if (practice.includes('ceram')) {
+      return `${name} and the Shape of Clay`;
+    }
+    if (practice.includes('instal')) {
+      return `${name} and the Drama of Space`;
+    }
+    if (practice.includes('desenh') || practice.includes('drawing') || practice.includes('ilustra')) {
+      return `${name} and the Precision of the Line`;
+    }
+
+    return `${name} and a Distinct Visual Language`;
   }
 
   /**
