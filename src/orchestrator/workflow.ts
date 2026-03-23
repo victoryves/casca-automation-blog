@@ -4,6 +4,8 @@
  * Main workflow coordinator for daily execution.
  */
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { initDatabase, closeDatabase } from '../db/supabase.js';
 import { artistOps, draftOps, publishingOps, sourceOps } from '../db/operations/index.js';
 import { getConfig } from '../config/index.js';
@@ -94,7 +96,7 @@ export class WorkflowOrchestrator {
 
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
-      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1);
+      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
 
       // Step 3: If no verified artists, run discovery loop until we find one
@@ -131,7 +133,7 @@ export class WorkflowOrchestrator {
 
             // Re-fetch verified artists
             verifiedArtists = await artistOps.findVerifiedUnpublished();
-            verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1);
+            verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
 
             // If we found at least one verified artist, stop discovery loop
             if (verifiedArtists.length > 0) {
@@ -197,7 +199,8 @@ export class WorkflowOrchestrator {
 
           if (images.length < 2) {
             await draftOps.delete(synthesisResult.draft.id!);
-            await artistOps.updateStatus(selectedArtist.id!, 'rejected');
+            await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
+            await artistOps.delete(selectedArtist.id!);
             state.draft_id = undefined;
             this.logger.warn(
               `Skipping artist ${selectedArtist.id} because only ${images.length} verified pure artwork image(s) were found`
@@ -242,6 +245,12 @@ export class WorkflowOrchestrator {
               this.logger.warn(`Failed to clean up draft ${currentDraftId}`, cleanupError);
             }
           }
+          try {
+            await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
+            await artistOps.delete(selectedArtist.id!);
+          } catch (statusError) {
+            this.logger.warn(`Failed to remove artist ${selectedArtist.id} after workflow error`, statusError);
+          }
           this.logger.warn(
             `Skipping artist ${selectedArtist.id} after workflow error`,
             artistError
@@ -275,23 +284,25 @@ export class WorkflowOrchestrator {
     this.logger.info(`Processing approval for draft ${draftId}`);
 
     try {
-      const config = this.ensureConfig();
       initDatabase();
 
       // Update draft status
       await draftOps.updateStatus(draftId, 'approved');
       this.logger.info('Draft marked as approved');
 
+      const hashnodeApiKey = process.env.HASHNODE_API_KEY;
+      const hashnodePublicationId = process.env.HASHNODE_PUBLICATION_ID;
+
       // Check if Hashnode credentials are configured
-      if (!config.env.hashnodeApiKey || !config.env.hashnodePublicationId) {
+      if (!hashnodeApiKey || !hashnodePublicationId) {
         this.logger.error('Hashnode API key or Publication ID not configured');
         throw new Error('Hashnode credentials not configured in environment');
       }
 
       // Publish
       const publishing = new PublishingModule(
-        config.env.hashnodeApiKey,
-        config.env.hashnodePublicationId
+        hashnodeApiKey,
+        hashnodePublicationId
       );
       const result = await publishing.publish(draftId);
 
@@ -327,10 +338,15 @@ export class WorkflowOrchestrator {
     }
   }
 
-  private async filterArtistsWithSources(artists: Artist[], minSources: number): Promise<Artist[]> {
+  private async filterArtistsWithSources(
+    artists: Artist[],
+    minSources: number,
+    workflowDate: string
+  ): Promise<Artist[]> {
     if (artists.length === 0) return artists;
 
     const excludedArtistNames = await this.getPreviouslySentArtistNames();
+    const failedArtistNames = await this.getFailedArtistNamesForDate(workflowDate);
     const filtered: Artist[] = [];
 
     for (const artist of artists) {
@@ -339,6 +355,13 @@ export class WorkflowOrchestrator {
         const normalizedArtistName = this.normalizeArtistName(artist.full_name);
         if (excludedArtistNames.has(normalizedArtistName)) {
           this.logger.warn(`Skipping artist ${artist.id} (${artist.full_name}) because this artist was already emailed before`);
+          continue;
+        }
+
+        if (failedArtistNames.has(normalizedArtistName)) {
+          this.logger.warn(
+            `Skipping artist ${artist.id} (${artist.full_name}) because this artist already failed image sourcing today`
+          );
           continue;
         }
 
@@ -498,6 +521,42 @@ export class WorkflowOrchestrator {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private async getFailedArtistNamesForDate(workflowDate: string): Promise<Set<string>> {
+    try {
+      const filePath = this.getFailedArtistsFilePath(workflowDate);
+      const content = await fs.readFile(filePath, 'utf8');
+      const parsed = JSON.parse(content);
+
+      if (!Array.isArray(parsed)) {
+        return new Set<string>();
+      }
+
+      return new Set(
+        parsed
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .map((value) => this.normalizeArtistName(value))
+      );
+    } catch {
+      return new Set<string>();
+    }
+  }
+
+  private async recordFailedArtistForDate(artistName: string, workflowDate: string): Promise<void> {
+    const normalized = this.normalizeArtistName(artistName);
+    if (!normalized) return;
+
+    const filePath = this.getFailedArtistsFilePath(workflowDate);
+    const failedArtists = await this.getFailedArtistNamesForDate(workflowDate);
+    failedArtists.add(normalized);
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(Array.from(failedArtists).sort(), null, 2));
+  }
+
+  private getFailedArtistsFilePath(workflowDate: string): string {
+    return path.join(process.cwd(), 'logs', 'daily', `failed-artists-${workflowDate}.json`);
   }
 
   private ensureConfig(): ReturnType<typeof getConfig> {
