@@ -190,6 +190,7 @@ export interface PublishingResult {
 export interface WorkflowState {
   date: string;
   email_sent: boolean;
+  prepared_draft: boolean;
   artist_id?: number;
   draft_id?: number;
   status: 'idle' | 'discovering' | 'verifying' | 'synthesizing' | 'emailing' | 'awaiting_approval' | 'publishing' | 'completed' | 'error';

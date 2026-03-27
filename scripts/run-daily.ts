@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     console.log(`  Date: ${result.date}`);
     console.log(`  Status: ${result.status}`);
     console.log(`  Email Sent: ${result.email_sent ? 'Yes' : 'No'}`);
+    console.log(`  Draft Prepared: ${result.prepared_draft ? 'Yes' : 'No'}`);
 
     if (result.artist_id) {
       console.log(`  Artist ID: ${result.artist_id}`);
@@ -50,10 +51,18 @@ async function main(): Promise<void> {
 
     // Exit with appropriate code
     if (result.status === 'error') {
+      const retryableNoArtistError = result.errors.some((error) =>
+        error.includes('No verified artist produced an approval-ready article')
+      );
+
+      if (retryableNoArtistError) {
+        process.exit(2);
+      }
+
       process.exit(1);
     }
 
-    if (!options.dryRun && !result.email_sent) {
+    if (!options.dryRun && !result.email_sent && !result.prepared_draft) {
       console.error('\n❌ Workflow completed without sending an approval email.');
       process.exit(2);
     }

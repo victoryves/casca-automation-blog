@@ -242,23 +242,28 @@ export class VerificationModule {
   async verifyAll(): Promise<VerificationResult[]> {
     const discovered = await artistOps.findByStatus('discovered');
     console.log(`\n📋 Verifying ${discovered.length} discovered artists...`);
+    return this.verifyBatch(discovered.map((artist) => artist.id!).filter((id): id is number => typeof id === 'number'));
+  }
+
+  async verifyBatch(artistIds: number[]): Promise<VerificationResult[]> {
+    console.log(`\n📋 Verifying ${artistIds.length} discovered artists...`);
 
     const results: VerificationResult[] = [];
 
-    for (const artist of discovered) {
+    for (const artistId of artistIds) {
       try {
-        const result = await this.verify(artist.id!);
+        const result = await this.verify(artistId);
         results.push(result);
 
         // Rate limiting
         await this.sleep(500);
       } catch (error) {
-        console.error(`Error verifying artist ${artist.id}:`, error);
+        console.error(`Error verifying artist ${artistId}:`, error);
       }
     }
 
     const verified = results.filter((r) => r.verified).length;
-    console.log(`\n✓ Verification complete: ${verified}/${discovered.length} verified`);
+    console.log(`\n✓ Verification complete: ${verified}/${artistIds.length} verified`);
 
     return results;
   }

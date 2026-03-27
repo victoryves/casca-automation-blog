@@ -14,9 +14,9 @@
     <key>WorkingDirectory</key>
     <string>/Users/victoryves/casca-automation-blog-runner</string>
 
-    <!-- Check every 15 minutes so queued rejections are processed promptly -->
+    <!-- Check every 5 minutes so new approvals quickly trigger next-draft preparation -->
     <key>StartInterval</key>
-    <integer>900</integer>
+    <integer>300</integer>
 
     <!-- Run on load too (catches missed runs after sleep/reboot) -->
     <key>RunAtLoad</key>

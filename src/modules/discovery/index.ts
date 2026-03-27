@@ -6,10 +6,12 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import axios from 'axios';
 import { TavilyClient } from './tavily-client.js';
+import { DuckDuckGoClient } from './duckduckgo-client.js';
 import { CandidateExtractor } from './candidate-extractor.js';
 import { SEED_ARTISTS, type SeedArtist } from './seed-artists.js';
-import { artistOps, sourceOps } from '../../db/operations/index.js';
+import { artistOps, draftOps, sourceOps } from '../../db/operations/index.js';
 import {
   getConfig,
   getInstitutionCredibility,
@@ -20,7 +22,9 @@ import type { DiscoveryResult, Artist, Source, TavilySearchResult } from '../../
 
 export class DiscoveryModule {
   private tavilyClient: TavilyClient;
+  private duckDuckGoClient: DuckDuckGoClient;
   private extractor: CandidateExtractor;
+  private tavilyUnavailable = false;
   private readonly STATE_MAP: Record<string, string> = {
     PE: 'Pernambuco',
     PB: 'Paraíba',
@@ -39,6 +43,7 @@ export class DiscoveryModule {
 
   constructor(tavilyApiKey: string) {
     this.tavilyClient = new TavilyClient(tavilyApiKey);
+    this.duckDuckGoClient = new DuckDuckGoClient();
     this.extractor = new CandidateExtractor();
   }
 
@@ -91,7 +96,7 @@ export class DiscoveryModule {
       try {
         console.log(`  Searching: ${searchQuery.description}`);
 
-        const response = await this.tavilyClient.search({
+        const response = await this.searchWithFallback({
           query: searchQuery.query,
           searchDepth: 'advanced',
           maxResults: 10,
@@ -268,8 +273,34 @@ export class DiscoveryModule {
   }
 
   private async loadExistingArtistNames(): Promise<Set<string>> {
-    const existing = await artistOps.findAll();
-    return new Set(existing.map((artist) => this.normalizeName(artist.full_name)));
+    const reservedNames = new Set<string>();
+    const artists = await artistOps.findAll();
+    const artistById = new Map(
+      artists
+        .filter((artist): artist is Artist & { id: number } => typeof artist.id === 'number')
+        .map((artist) => [artist.id, artist])
+    );
+
+    for (const artist of artists) {
+      if (artist.status === 'published' || artist.status === 'rejected') {
+        reservedNames.add(this.normalizeName(artist.full_name));
+      }
+    }
+
+    const reservedDrafts = [
+      ...(await draftOps.findByStatus('sent')),
+      ...(await draftOps.findByStatus('approved')),
+      ...(await draftOps.findByStatus('rejected')),
+    ];
+
+    for (const draft of reservedDrafts) {
+      const artist = artistById.get(draft.artist_id);
+      if (artist) {
+        reservedNames.add(this.normalizeName(artist.full_name));
+      }
+    }
+
+    return reservedNames;
   }
 
   private async loadFailedArtistNamesForToday(appTimezone?: string): Promise<Set<string>> {
@@ -404,10 +435,24 @@ export class DiscoveryModule {
     const queries = this.buildSeedQueries(seed, states);
     const resultsByUrl = new Map<string, TavilySearchResult>();
     const queriesUsed: string[] = [];
+    const guessedSources = await this.collectGuessedSeedSources(seed, config);
+
+    if (guessedSources.length >= 2) {
+      console.log(`  ✓ Using guessed fallback sources for ${seed.name}`);
+      return { sources: guessedSources, queriesUsed };
+    }
+
+    if (this.tavilyUnavailable) {
+      return { sources: guessedSources, queriesUsed };
+    }
 
     for (const query of queries) {
+      if (this.tavilyUnavailable) {
+        break;
+      }
+
       try {
-        const response = await this.tavilyClient.search({
+        const response = await this.searchWithFallback({
           query,
           searchDepth: 'advanced',
           maxResults: 6,
@@ -443,7 +488,216 @@ export class DiscoveryModule {
       3
     );
 
-    return { sources, queriesUsed };
+    if (sources.length >= 2) {
+      return { sources, queriesUsed };
+    }
+
+    const merged = this.mergeSources(sources, guessedSources, 3);
+
+    if (merged.length > sources.length) {
+      console.log(`  ✓ Added ${merged.length - sources.length} guessed fallback source(s) for ${seed.name}`);
+    }
+
+    if (merged.length >= 2) {
+      return { sources: merged, queriesUsed };
+    }
+
+    return { sources: merged, queriesUsed };
+  }
+
+  private mergeSources(
+    primary: Omit<Source, 'id' | 'artist_id'>[],
+    secondary: Omit<Source, 'id' | 'artist_id'>[],
+    limit: number
+  ): Omit<Source, 'id' | 'artist_id'>[] {
+    const merged: Omit<Source, 'id' | 'artist_id'>[] = [];
+    const seen = new Set<string>();
+
+    for (const source of [...primary, ...secondary]) {
+      if (merged.length >= limit) {
+        break;
+      }
+      if (seen.has(source.url)) {
+        continue;
+      }
+      seen.add(source.url);
+      merged.push(source);
+    }
+
+    return merged;
+  }
+
+  private async collectGuessedSeedSources(
+    seed: SeedArtist,
+    config: Config
+  ): Promise<Omit<Source, 'id' | 'artist_id'>[]> {
+    const guessedUrls = this.buildGuessedSourceUrls(seed.name);
+    const sources: Omit<Source, 'id' | 'artist_id'>[] = [];
+
+    for (const url of guessedUrls) {
+      const summary = await this.fetchSourceSummary(url);
+      if (!summary) {
+        continue;
+      }
+
+      if (!this.isExpectedArtistLandingUrl(url, summary.finalUrl, seed.name)) {
+        continue;
+      }
+
+      const strongMatch = this.isStrongArtistMatch(
+        {
+          title: summary.title,
+          url: summary.finalUrl,
+          content: summary.content,
+          score: summary.score,
+        },
+        seed.name
+      );
+
+      if (!strongMatch || this.isBlockedDiscoverySource(summary.finalUrl)) {
+        continue;
+      }
+
+      sources.push({
+        url: summary.finalUrl,
+        institution:
+          getInstitutionName(summary.finalUrl, config.institutions) ??
+          this.safeDomain(summary.finalUrl) ??
+          'unknown',
+        credibility_score: this.estimateCredibility(summary.finalUrl, summary.score, config),
+        content_summary: summary.content.substring(0, 500),
+      });
+
+      if (sources.length >= 3) {
+        break;
+      }
+    }
+
+    return sources;
+  }
+
+  private buildGuessedSourceUrls(artistName: string): string[] {
+    const slug = this.slugifyArtistName(artistName);
+    const wikiTitle = this.wikipediaTitle(artistName);
+
+    return [
+      `https://www.escritoriodearte.com/artista/${slug}`,
+      `https://dailyartfair.com/artist/${slug}`,
+      `https://en.wikipedia.org/wiki/${wikiTitle}`,
+      `https://pt.wikipedia.org/wiki/${wikiTitle}`,
+      `https://www.wikidata.org/wiki/${wikiTitle}`,
+    ];
+  }
+
+  private slugifyArtistName(value: string): string {
+    return this.normalizeName(value)
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  }
+
+  private wikipediaTitle(value: string): string {
+    return value.trim().replace(/\s+/g, '_');
+  }
+
+  private isExpectedArtistLandingUrl(originalUrl: string, finalUrl: string, artistName: string): boolean {
+    try {
+      const original = new URL(originalUrl);
+      const final = new URL(finalUrl);
+      const finalPath = final.pathname.toLowerCase();
+      const artistSlug = this.slugifyArtistName(artistName);
+
+      if (original.hostname.includes('escritoriodearte.com')) {
+        return final.hostname.includes('escritoriodearte.com') && finalPath.includes(`/artista/${artistSlug}`);
+      }
+
+      if (original.hostname.includes('dailyartfair.com')) {
+        return final.hostname.includes('dailyartfair.com') && finalPath.includes(`/artist/${artistSlug}`);
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async fetchSourceSummary(
+    url: string
+  ): Promise<{ title: string; content: string; score: number; finalUrl: string } | null> {
+    try {
+      const response = await axios.get<string>(url, {
+        timeout: 12000,
+        maxRedirects: 5,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        },
+        responseType: 'text',
+        validateStatus: (status) => status >= 200 && status < 400,
+      });
+
+      const html = typeof response.data === 'string' ? response.data : '';
+      if (!html) {
+        return null;
+      }
+
+      const title = this.extractHtmlTitle(html) || url;
+      const content = this.extractHtmlSummary(html);
+
+      if (!content) {
+        return null;
+      }
+
+      const finalUrl =
+        response.request?.res?.responseUrl ||
+        response.request?.responseURL ||
+        url;
+
+      return {
+        title,
+        content,
+        score: 0.72,
+        finalUrl,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private extractHtmlTitle(html: string): string {
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return this.cleanHtmlSnippet(titleMatch?.[1] ?? '');
+  }
+
+  private extractHtmlSummary(html: string): string {
+    const descriptionMatch = html.match(
+      /<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']/i
+    );
+    const description = this.cleanHtmlSnippet(descriptionMatch?.[1] ?? '');
+    if (description.length >= 40) {
+      return description;
+    }
+
+    const bodyText = this.cleanHtmlSnippet(
+      html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+    );
+
+    return bodyText.substring(0, 600).trim();
+  }
+
+  private cleanHtmlSnippet(value: string): string {
+    return value
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private buildSourcesFromResults(
@@ -520,6 +774,7 @@ export class DiscoveryModule {
 
     const domain = this.safeDomain(url);
     if (domain) {
+      if (domain.includes('escritoriodearte.com')) return 0.9;
       if (domain.includes('dailyartfair.com')) return 0.86;
       if (domain.includes('mutualart.com')) return 0.82;
       if (domain.includes('wikiart.org')) return 0.8;
@@ -633,5 +888,30 @@ export class DiscoveryModule {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async searchWithFallback(options: {
+    query: string;
+    searchDepth?: 'basic' | 'advanced';
+    maxResults?: number;
+  }): Promise<{ query: string; results: TavilySearchResult[] }> {
+    try {
+      return await this.tavilyClient.search(options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('status code 432')) {
+        this.tavilyUnavailable = true;
+        console.warn(`  ⚠ Tavily unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
+        return this.duckDuckGoClient.search({
+          query: options.query,
+          maxResults: options.maxResults,
+        });
+      }
+      console.warn(`  ⚠ Tavily unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
+      return this.duckDuckGoClient.search({
+        query: options.query,
+        maxResults: options.maxResults,
+      });
+    }
   }
 }

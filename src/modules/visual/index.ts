@@ -35,6 +35,7 @@ export class VisualModule {
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
   private readonly gemini: GeminiClient;
+  private visionUnavailableUntil = 0;
 
   constructor(geminiApiKey: string, imagesDir = './data/images') {
     this.imagesDir = imagesDir;
@@ -66,12 +67,12 @@ export class VisualModule {
     }
 
     // Layer 2: Wikimedia Commons + Claude Vision
-    if (images.length < maxImages) {
+    if (images.length < maxImages && !this.isVisionTemporarilyUnavailable()) {
       await this.searchWikimediaVerified(artist, images, maxImages, selectedArtworkKeys);
     }
 
     // Layer 3: Web search + Claude Vision
-    if (images.length < maxImages) {
+    if (images.length < maxImages && !this.isVisionTemporarilyUnavailable()) {
       await this.searchWebVerified(artist, images, maxImages, selectedArtworkKeys);
     }
 
@@ -165,15 +166,46 @@ export class VisualModule {
               continue;
             }
 
-            const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
-            if (quality.verified && !this.isNegativeVerificationReason(quality.reason)) {
+            if (
+              this.shouldAcceptHighConfidenceTrustedArtwork(
+                source,
+                resolvedCandidate.url,
+                resolvedCandidate.objectHref || source.url,
+                `${resolvedCandidate.objectTitle} ${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.context}`,
+                artist
+              )
+            ) {
               images.push({
                 url: resolvedCandidate.url,
                 caption: chosenLabel || `Artwork by ${artist.full_name}`,
                 attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
               });
               selectedArtworkKeys.add(artworkKey);
-              console.log(`  ✓ Added direct-source image from ${source.institution}: ${quality.reason}`);
+              console.log(`  ✓ Added direct-source image from ${source.institution}: High-confidence trusted-source acceptance`);
+              break;
+            }
+
+            const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
+            const allowTrustedFallback = this.shouldAcceptTrustedSourceWithoutVision(
+              source,
+              resolvedCandidate.objectHref || source.url,
+              `${resolvedCandidate.objectTitle} ${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.context}`,
+              artist,
+              quality.reason
+            );
+
+            if ((quality.verified && !this.isNegativeVerificationReason(quality.reason)) || allowTrustedFallback) {
+              images.push({
+                url: resolvedCandidate.url,
+                caption: chosenLabel || `Artwork by ${artist.full_name}`,
+                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
+              });
+              selectedArtworkKeys.add(artworkKey);
+              console.log(
+                `  ✓ Added direct-source image from ${source.institution}: ${
+                  allowTrustedFallback ? 'Trusted-source fallback without Gemini vision' : quality.reason
+                }`
+              );
               break;
             } else {
               console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${quality.reason}`);
@@ -237,15 +269,46 @@ export class VisualModule {
             }
 
             // Even verified sources need quality check (could be banners/thumbnails)
-            const quality = await this.verifyImageWithClaude(normalizedUrl, artist);
-            if (quality.verified) {
+            if (
+              this.shouldAcceptHighConfidenceTrustedArtwork(
+                source,
+                normalizedUrl,
+                img.source_page || source.url,
+                `${img.alt} ${img.source_page ?? ''}`,
+                artist
+              )
+            ) {
               images.push({
                 url: normalizedUrl,
                 caption: img.alt || `Artwork by ${artist.full_name}`,
                 attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
               });
               selectedArtworkKeys.add(artworkKey);
-              console.log(`  ✓ Added verified image from ${source.institution}: ${quality.reason}`);
+              console.log(`  ✓ Added verified image from ${source.institution}: High-confidence trusted-source acceptance`);
+              continue;
+            }
+
+            const quality = await this.verifyImageWithClaude(normalizedUrl, artist);
+            const allowTrustedFallback = this.shouldAcceptTrustedSourceWithoutVision(
+              source,
+              img.source_page || source.url,
+              `${img.alt} ${img.source_page ?? ''}`,
+              artist,
+              quality.reason
+            );
+
+            if (quality.verified || allowTrustedFallback) {
+              images.push({
+                url: normalizedUrl,
+                caption: img.alt || `Artwork by ${artist.full_name}`,
+                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
+              });
+              selectedArtworkKeys.add(artworkKey);
+              console.log(
+                `  ✓ Added verified image from ${source.institution}: ${
+                  allowTrustedFallback ? 'Trusted-source fallback without Gemini vision' : quality.reason
+                }`
+              );
             } else {
               console.log(`  ✗ Rejected from ${source.institution}: ${quality.reason}`);
             }
@@ -575,15 +638,31 @@ export class VisualModule {
       'gallery',
       'galeria',
       'canvas',
+      'tela',
       'paper',
+      'papel',
       'cordel',
       'etching',
       'engraving',
       'linocut',
       'serigraph',
+      'serigrafia',
       'silkscreen',
       'mixed media',
       'oil on canvas',
+      'oleo',
+      'guache',
+      'gouache',
+      'nanquim',
+      'aquarela',
+      'watercolor',
+      'litogravura',
+      'lithograph',
+      'acrilica',
+      'acrylic',
+      'desenho',
+      'grafite',
+      'sepia',
       'acrylic on canvas',
       'tempera',
       'untitled',
@@ -697,6 +776,127 @@ export class VisualModule {
     ];
 
     return negativeSignals.some((signal) => normalizedReason.includes(signal));
+  }
+
+  private shouldAcceptTrustedSourceWithoutVision(
+    source: Source,
+    objectHref: string,
+    metadataText: string,
+    artist: ArtistInfo,
+    verificationReason: string
+  ): boolean {
+    if (!this.isQuotaOrVisionOutageReason(verificationReason)) {
+      return false;
+    }
+
+    if (!this.isTrustedSource(source)) {
+      return false;
+    }
+
+    const normalizedMetadata = this.normalizeText(
+      `${metadataText} ${source.url} ${objectHref} ${source.content_summary ?? ''}`
+    );
+
+    if (this.containsNonArtworkSignals(normalizedMetadata)) {
+      return false;
+    }
+
+    if (!this.containsArtworkSignals(normalizedMetadata)) {
+      return false;
+    }
+
+    if (!this.metadataMatchesArtist(normalizedMetadata, artist.full_name)) {
+      return false;
+    }
+
+    const normalizedObjectHref = this.normalizeText(objectHref);
+    if (
+      normalizedObjectHref &&
+      (normalizedObjectHref.includes('/artista/') || normalizedObjectHref.includes('/artist/')) &&
+      !this.objectHrefTargetsArtist(normalizedObjectHref, artist.full_name)
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private shouldAcceptHighConfidenceTrustedArtwork(
+    source: Source,
+    imageUrl: string,
+    objectHref: string,
+    metadataText: string,
+    artist: ArtistInfo
+  ): boolean {
+    if (!this.isTrustedSource(source)) {
+      return false;
+    }
+
+    const normalizedMetadata = this.normalizeText(
+      `${metadataText} ${imageUrl} ${source.url} ${objectHref} ${source.content_summary ?? ''}`
+    );
+
+    if (this.containsNonArtworkSignals(normalizedMetadata)) {
+      return false;
+    }
+
+    if (!this.containsArtworkSignals(normalizedMetadata)) {
+      return false;
+    }
+
+    if (!this.metadataMatchesArtist(normalizedMetadata, artist.full_name)) {
+      return false;
+    }
+
+    const normalizedObjectHref = this.normalizeText(objectHref);
+    if (!normalizedObjectHref || !this.objectHrefTargetsArtist(normalizedObjectHref, artist.full_name)) {
+      if (!this.urlTargetsArtist(source.url, artist.full_name)) {
+        return false;
+      }
+    }
+
+    return this.isStrongArtworkAssetUrl(imageUrl);
+  }
+
+  private isQuotaOrVisionOutageReason(reason: string): boolean {
+    const normalizedReason = this.normalizeText(reason);
+    return (
+      normalizedReason.includes('quota exceeded') ||
+      normalizedReason.includes('rate limit') ||
+      normalizedReason.includes('retry in') ||
+      normalizedReason.includes('verification error') ||
+      normalizedReason.includes('api key not valid')
+    );
+  }
+
+  private metadataMatchesArtist(text: string, artistName: string): boolean {
+    const normalizedArtist = this.normalizeText(artistName);
+    if (!normalizedArtist) {
+      return false;
+    }
+
+    if (text.includes(normalizedArtist)) {
+      return true;
+    }
+
+    const tokens = normalizedArtist.split(' ').filter((token) => token.length >= 4);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    const surname = tokens[tokens.length - 1];
+    const givenNames = tokens.slice(0, -1);
+
+    return text.includes(surname) && givenNames.some((token) => text.includes(token));
+  }
+
+  private objectHrefTargetsArtist(normalizedObjectHref: string, artistName: string): boolean {
+    const slug = this.normalizeText(artistName).replace(/\s+/g, '-');
+    return normalizedObjectHref.includes(`/${slug}`) || normalizedObjectHref.includes(slug);
+  }
+
+  private urlTargetsArtist(url: string, artistName: string): boolean {
+    return this.objectHrefTargetsArtist(this.normalizeText(url), artistName);
   }
 
   private isBlockedImageHost(url: string): boolean {
@@ -1105,6 +1305,10 @@ export class VisualModule {
     imageUrl: string,
     artist: ArtistInfo
   ): Promise<{ verified: boolean; reason: string }> {
+    if (this.isVisionTemporarilyUnavailable()) {
+      return { verified: false, reason: 'Gemini vision temporarily unavailable due to quota' };
+    }
+
     try {
       // Download image as base64
       const imageData = await this.downloadImageAsBase64(imageUrl);
@@ -1174,8 +1378,26 @@ When in doubt on any criterion, say false.`,
       return { verified: false, reason: `Could not parse verification response: ${normalized.slice(0, 120)}` };
     } catch (error) {
       console.warn(`  Gemini vision verification failed for ${imageUrl}:`, error);
+      this.noteVisionFailure(error);
       return { verified: false, reason: 'Verification error — rejected for safety' };
     }
+  }
+
+  private isVisionTemporarilyUnavailable(): boolean {
+    return this.visionUnavailableUntil > Date.now();
+  }
+
+  private noteVisionFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = this.normalizeText(message);
+    if (!normalized.includes('quota exceeded') && !normalized.includes('rate limit')) {
+      return;
+    }
+
+    const retryMatch = message.match(/retry in\s+([0-9.]+)s/i);
+    const retrySeconds = retryMatch ? Number.parseFloat(retryMatch[1]) : 60;
+    const retryMs = Number.isFinite(retrySeconds) ? Math.ceil(retrySeconds * 1000) : 60_000;
+    this.visionUnavailableUntil = Date.now() + Math.max(retryMs, 30_000);
   }
 
   /**

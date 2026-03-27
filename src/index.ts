@@ -14,6 +14,7 @@ export { VerificationModule } from './modules/verification/index.js';
 export { SynthesisModule } from './modules/synthesis/index.js';
 export { VisualModule } from './modules/visual/index.js';
 export { EmailModule } from './modules/email/index.js';
+export { EmergencyFallbackModule } from './modules/emergency/index.js';
 export { PublishingModule } from './modules/publishing/index.js';
 
 // Export database operations
