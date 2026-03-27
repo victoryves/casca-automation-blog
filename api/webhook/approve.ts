@@ -1,7 +1,7 @@
 /**
  * Vercel Serverless Function - One-Click Approval
  *
- * GET /api/webhook/approve?draft=ID&token=SECRET
+ * GET /api/webhook/approve?draft=ID&featured=INDEX&token=SECRET
  * Approves and publishes a draft to Hashnode.
  */
 
@@ -12,6 +12,7 @@ import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
   const draftId = Number(req.query.draft);
+  const featuredImageIndex = Number(req.query.featured ?? 0);
   const token = req.query.token as string;
   const webhookSecret = process.env.WEBHOOK_SECRET;
 
@@ -48,7 +49,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     // Publish
     console.log(`Approving draft ${draftId}: ${draft.title}`);
     const orchestrator = new WorkflowOrchestrator();
-    await orchestrator.handleApproval(draftId);
+    await orchestrator.handleApproval(
+      draftId,
+      Number.isInteger(featuredImageIndex) && featuredImageIndex >= 0 ? featuredImageIndex : 0
+    );
 
     closeDatabase();
 

@@ -22,7 +22,7 @@ export class PublishingModule {
   /**
    * Publish draft to Hashnode
    */
-  async publish(draftId: number): Promise<PublishingResult> {
+  async publish(draftId: number, featuredImageIndex = 0): Promise<PublishingResult> {
     console.log(`\n🚀 Publishing draft ${draftId} to Hashnode...`);
 
     const draft = await draftOps.findById(draftId);
@@ -53,7 +53,10 @@ export class PublishingModule {
 
     // Parse images
     const images: Image[] = draft.images ? JSON.parse(draft.images) : [];
-    const coverImage = images[0];
+    const normalizedFeaturedImageIndex =
+      Number.isInteger(featuredImageIndex) && featuredImageIndex >= 0 ? featuredImageIndex : 0;
+    const coverImage = images[normalizedFeaturedImageIndex] ?? images[0];
+    const contentImages = images.filter((_, index) => index !== normalizedFeaturedImageIndex);
 
     try {
       if (!coverImage) {
@@ -64,7 +67,6 @@ export class PublishingModule {
       const sources = await sourceOps.findByArtistId(draft.artist_id);
 
       // Generate Hashnode-formatted content (HTML)
-      const contentImages = images.slice(1);
       const content = await this.generateHashnodeContent(
         draft,
         artist.full_name,

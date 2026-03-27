@@ -14,6 +14,7 @@ import { VerificationModule } from '../modules/verification/index.js';
 import { SynthesisModule } from '../modules/synthesis/index.js';
 import { VisualModule } from '../modules/visual/index.js';
 import { EmailModule } from '../modules/email/index.js';
+import { EmergencyFallbackModule } from '../modules/emergency/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
 import { queueRejectedDraftReplacement } from '../modules/rejections/index.js';
 import { ScraperBridge } from '../modules/scraper-bridge/index.js';
@@ -31,6 +32,10 @@ interface PendingReplacementRequest {
   draftId: number;
   requestedAt: string;
 }
+
+const MIN_APPROVAL_IMAGES = 2;
+const NORMAL_SEND_HOUR = 8;
+const TARGET_READY_PENDING_DRAFTS = 3;
 
 export class WorkflowOrchestrator {
   private logger: Logger;
@@ -63,6 +68,7 @@ export class WorkflowOrchestrator {
         day: '2-digit',
       }).format(new Date()),
       email_sent: false,
+      prepared_draft: false,
       status: 'idle',
       errors: [],
     };
@@ -77,15 +83,62 @@ export class WorkflowOrchestrator {
       const synthesis = new SynthesisModule(config.env.geminiApiKey);
       const visual = new VisualModule(config.env.geminiApiKey);
       const email = new EmailModule(config.env.resendApiKey);
+      const emergencyFallback = new EmergencyFallbackModule();
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
+      const sendWindowOpen = this.isNormalSendWindowOpen(config.env.appTimezone);
+      let readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+      let readyPendingDraft = readyPendingDrafts[0] ?? null;
+      let readyPendingCount = readyPendingDrafts.length;
+      let emailSentToday = await email.emailSentToday();
+      let sendStillNeeded = hasPendingReplacementRequest || (!emailSentToday && sendWindowOpen);
 
-      // Step 1: Check if email already sent today
-      if (!options.forceRun && !hasPendingReplacementRequest && await email.emailSentToday()) {
-        this.logger.info('✓ Email already sent today - skipping workflow');
-        state.email_sent = true;
-        state.status = 'completed';
-        return state;
+      if (readyPendingDraft && sendStillNeeded) {
+        this.logger.info(`Sending already-prepared draft ${readyPendingDraft.id}`);
+        try {
+          await email.sendApprovalEmail({
+            draftId: readyPendingDraft.id!,
+            images: readyPendingDraft.parsedImages,
+          });
+
+          state.email_sent = true;
+          state.artist_id = readyPendingDraft.artist_id;
+          state.draft_id = readyPendingDraft.id;
+          state.status = 'awaiting_approval';
+          emailSentToday = true;
+          sendStillNeeded = false;
+        } catch (preparedDraftError) {
+          const message =
+            preparedDraftError instanceof Error
+              ? preparedDraftError.message
+              : String(preparedDraftError);
+
+          const isStalePreparedDraft =
+            message.includes('validated images') ||
+            message.includes('fewer than') ||
+            message.includes('duplicate approval email');
+
+          if (!isStalePreparedDraft) {
+            throw preparedDraftError;
+          }
+
+          this.logger.warn(
+            `Discarding stale prepared draft ${readyPendingDraft.id} after send failure: ${message}`
+          );
+          await draftOps.delete(readyPendingDraft.id!);
+        }
+
+        readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+        readyPendingDraft = readyPendingDrafts[0] ?? null;
+        readyPendingCount = readyPendingDrafts.length;
+
+        if (state.email_sent && pendingReplacementRequests.length > 0) {
+          const oldestPendingRequest = pendingReplacementRequests[0];
+          await this.clearPendingReplacementRequest(oldestPendingRequest.logId);
+          this.logger.info(
+            `Cleared pending replacement request log ${oldestPendingRequest.logId}`
+          );
+        }
       }
 
       if (hasPendingReplacementRequest) {
@@ -94,79 +147,116 @@ export class WorkflowOrchestrator {
         );
       }
 
+      if (!hasPendingReplacementRequest && emailSentToday && readyPendingCount >= TARGET_READY_PENDING_DRAFTS) {
+        this.logger.info(
+          `✓ Email already sent today and backlog is healthy (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS}) - skipping workflow`
+        );
+        state.email_sent = true;
+        state.prepared_draft = readyPendingCount > 0;
+        state.draft_id = readyPendingDraft?.id;
+        state.status = 'completed';
+        return state;
+      }
+
+      if (!hasPendingReplacementRequest && !sendWindowOpen && readyPendingCount >= TARGET_READY_PENDING_DRAFTS) {
+        this.logger.info(
+          `✓ Backlog already prepared before the ${NORMAL_SEND_HOUR.toString().padStart(2, '0')}:00 send window (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS})`
+        );
+        state.prepared_draft = true;
+        state.draft_id = readyPendingDraft?.id;
+        state.status = 'completed';
+        return state;
+      }
+
+      const shouldPrepareOnly = !sendStillNeeded;
+      let preparationSlotsNeeded = Math.max(0, TARGET_READY_PENDING_DRAFTS - readyPendingCount);
+
+      if (shouldPrepareOnly && preparationSlotsNeeded > 0) {
+        this.logger.info(
+          emailSentToday
+            ? `Email already sent today, preparing ${preparationSlotsNeeded} replacement draft(s) in the background`
+            : `Before ${NORMAL_SEND_HOUR}:00 local time, preparing ${preparationSlotsNeeded} draft(s) without sending`
+        );
+      }
+
+      if (!sendStillNeeded && preparationSlotsNeeded === 0) {
+        state.prepared_draft = readyPendingCount > 0;
+        state.draft_id = readyPendingDraft?.id;
+        state.status = 'completed';
+        return state;
+      }
+
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
       verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
 
-      // Step 3: If no verified artists, run discovery loop until we find one
-      if (verifiedArtists.length === 0 && !options.skipDiscovery) {
-        this.logger.info('No verified artists - starting discovery loop');
-        state.status = 'discovering';
+      const maxDiscoveryAttempts = 10;
+      let discoveryAttempts = 0;
+      let completed = false;
+      const fallbackExcludedArtistIds = await this.getFallbackExcludedArtistIds(pendingReplacementRequests);
 
-        const maxAttempts = 10; // Maximum discovery rounds to prevent infinite loop
-        let attempt = 0;
-
-        // Keep discovering until we find at least one verified artist
-        while (verifiedArtists.length === 0 && attempt < maxAttempts) {
-          attempt++;
-          this.logger.info(`Discovery attempt ${attempt}/${maxAttempts}`);
-
-          // Discover 5 candidates per attempt
-          const discoveryResult = await discovery.discover(5);
-          this.logger.info(`Discovery round ${attempt}: ${discoveryResult.candidates.length} candidates found`, {
-            errors: discoveryResult.errors,
-          });
-
-          if (discoveryResult.errors.length > 0) {
-            state.errors.push(...discoveryResult.errors);
+      while (sendStillNeeded || preparationSlotsNeeded > 0) {
+        if (verifiedArtists.length === 0) {
+          if (options.skipDiscovery) {
+            break;
           }
 
-          // Step 4: Verify discovered candidates
-          if (discoveryResult.candidates.length > 0) {
-            this.logger.info('Starting verification');
-            state.status = 'verifying';
+          this.logger.info('No verified artists available - starting discovery loop');
+          state.status = 'discovering';
 
-            const verificationResults = await verification.verifyAll();
-            const verified = verificationResults.filter((r) => r.verified).length;
-            this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
+          while (verifiedArtists.length === 0 && discoveryAttempts < maxDiscoveryAttempts) {
+            discoveryAttempts++;
+            this.logger.info(`Discovery attempt ${discoveryAttempts}/${maxDiscoveryAttempts}`);
 
-            // Re-fetch verified artists
-            verifiedArtists = await artistOps.findVerifiedUnpublished();
-            verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
+            const discoveryResult = await discovery.discover(5);
+            this.logger.info(`Discovery round ${discoveryAttempts}: ${discoveryResult.candidates.length} candidates found`, {
+              errors: discoveryResult.errors,
+            });
 
-            // If we found at least one verified artist, stop discovery loop
-            if (verifiedArtists.length > 0) {
-              this.logger.info(`✓ Found ${verifiedArtists.length} verified artist(s) after ${attempt} attempt(s)`);
-              break;
+            if (discoveryResult.errors.length > 0) {
+              state.errors.push(...discoveryResult.errors);
+            }
+
+            if (discoveryResult.candidates.length > 0) {
+              this.logger.info('Starting verification');
+              state.status = 'verifying';
+
+              const verificationResults = await verification.verifyBatch(
+                discoveryResult.candidates
+                  .map((candidate) => candidate.id)
+                  .filter((id): id is number => typeof id === 'number')
+              );
+              const verified = verificationResults.filter((r) => r.verified).length;
+              this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
+
+              verifiedArtists = await artistOps.findVerifiedUnpublished();
+              verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
+
+              if (verifiedArtists.length > 0) {
+                this.logger.info(`✓ Found ${verifiedArtists.length} verified artist(s) after ${discoveryAttempts} attempt(s)`);
+                break;
+              }
+            }
+
+            if (verifiedArtists.length === 0 && discoveryAttempts < maxDiscoveryAttempts) {
+              this.logger.info(
+                `No verified artists yet, continuing discovery (attempt ${discoveryAttempts + 1}/${maxDiscoveryAttempts})...`
+              );
             }
           }
 
-          // If no candidates found and no verified artists yet, continue searching
-          if (verifiedArtists.length === 0 && attempt < maxAttempts) {
-            this.logger.info(`No verified artists yet, continuing discovery (attempt ${attempt + 1}/${maxAttempts})...`);
+          if (verifiedArtists.length === 0) {
+            break;
           }
         }
 
-        // Log if we hit max attempts
-        if (attempt >= maxAttempts && verifiedArtists.length === 0) {
-          this.logger.warn(`Reached maximum discovery attempts (${maxAttempts}) without finding verified artist`);
+        verifiedArtists = await this.rankArtistsForVariety(verifiedArtists);
+        const selectedArtist = verifiedArtists.shift();
+        if (!selectedArtist) {
+          break;
         }
-      }
 
-      // Step 5: Check if we have a verified artist to process
-      if (verifiedArtists.length === 0) {
-        this.logger.warn('No verified artists available - workflow stopping');
-        state.status = 'completed';
-        state.errors.push('No verified artists available');
-        return state;
-      }
-
-      verifiedArtists = await this.rankArtistsForVariety(verifiedArtists);
-
-      let completed = false;
-
-      for (const selectedArtist of verifiedArtists) {
         state.artist_id = selectedArtist.id;
         this.logger.info(`Selected artist: ${selectedArtist.full_name} (ID: ${selectedArtist.id})`);
         let currentDraftId: number | undefined;
@@ -179,7 +269,9 @@ export class WorkflowOrchestrator {
 
           const synthesisResult = await synthesis.synthesize(selectedArtist.id!);
           currentDraftId = synthesisResult.draft.id;
-          state.draft_id = synthesisResult.draft.id;
+          if (!state.email_sent) {
+            state.draft_id = synthesisResult.draft.id;
+          }
           this.logger.info('Article synthesized', synthesisResult.metadata);
 
           this.logger.info('Sourcing verified images');
@@ -197,7 +289,7 @@ export class WorkflowOrchestrator {
           );
           this.logger.info(`Sourced ${images.length} verified images`);
 
-          if (images.length < 2) {
+          if (images.length < MIN_APPROVAL_IMAGES) {
             await draftOps.delete(synthesisResult.draft.id!);
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
             await artistOps.delete(selectedArtist.id!);
@@ -210,7 +302,10 @@ export class WorkflowOrchestrator {
 
           if (options.dryRun) {
             this.logger.info('DRY RUN - Skipping email send');
-          } else {
+            completed = true;
+            sendStillNeeded = false;
+            preparationSlotsNeeded = Math.max(0, preparationSlotsNeeded - 1);
+          } else if (sendStillNeeded) {
             this.logger.info('Sending approval email');
             state.status = 'emailing';
 
@@ -221,7 +316,13 @@ export class WorkflowOrchestrator {
 
             state.email_sent = true;
             state.status = 'awaiting_approval';
+            state.artist_id = selectedArtist.id;
+            state.draft_id = synthesisResult.draft.id;
             this.logger.info('✓ Approval email sent successfully');
+
+            sendStillNeeded = false;
+            emailSentToday = true;
+            completed = true;
 
             if (pendingReplacementRequests.length > 0) {
               const oldestPendingRequest = pendingReplacementRequests[0];
@@ -230,10 +331,17 @@ export class WorkflowOrchestrator {
                 `Cleared pending replacement request log ${oldestPendingRequest.logId}`
               );
             }
+          } else {
+            await draftOps.updateImages(synthesisResult.draft.id!, images);
+            state.prepared_draft = true;
+            if (!state.email_sent) {
+              state.draft_id = synthesisResult.draft.id;
+            }
+            this.logger.info(`✓ Draft ${synthesisResult.draft.id} prepared and saved for the next send window`);
+            readyPendingCount++;
+            preparationSlotsNeeded = Math.max(0, TARGET_READY_PENDING_DRAFTS - readyPendingCount);
+            completed = true;
           }
-
-          completed = true;
-          break;
         } catch (artistError) {
           if (currentDraftId) {
             try {
@@ -258,8 +366,61 @@ export class WorkflowOrchestrator {
         }
       }
 
-      if (!completed) {
-        throw new Error('No verified artist produced an approval-ready article with at least 2 pure artworks');
+      while (sendStillNeeded) {
+        const fallbackDraft = await emergencyFallback.prepareFallbackDraft({
+          minImages: MIN_APPROVAL_IMAGES,
+          excludedArtistIds: fallbackExcludedArtistIds,
+        });
+
+        if (!fallbackDraft) {
+          break;
+        }
+
+        fallbackExcludedArtistIds.add(fallbackDraft.artistId);
+        this.logger.warn(
+          `Using emergency fallback draft ${fallbackDraft.draftId} cloned from ${fallbackDraft.sourceDraftId} for ${fallbackDraft.artistName}`
+        );
+
+        if (!state.email_sent) {
+          state.artist_id = fallbackDraft.artistId;
+          state.draft_id = fallbackDraft.draftId;
+        }
+
+        if (options.dryRun) {
+          completed = true;
+          sendStillNeeded = false;
+          continue;
+        }
+
+        if (sendStillNeeded) {
+          await email.sendApprovalEmail({
+            draftId: fallbackDraft.draftId,
+            images: fallbackDraft.images,
+          });
+
+          state.email_sent = true;
+          state.status = 'awaiting_approval';
+          state.artist_id = fallbackDraft.artistId;
+          state.draft_id = fallbackDraft.draftId;
+          sendStillNeeded = false;
+          emailSentToday = true;
+          completed = true;
+
+          if (pendingReplacementRequests.length > 0) {
+            const oldestPendingRequest = pendingReplacementRequests[0];
+            await this.clearPendingReplacementRequest(oldestPendingRequest.logId);
+            this.logger.info(
+              `Cleared pending replacement request log ${oldestPendingRequest.logId}`
+            );
+          }
+        } else {
+          state.prepared_draft = true;
+          completed = true;
+        }
+      }
+
+      if (!completed || sendStillNeeded) {
+        throw new Error(`No verified artist produced an approval-ready article with at least ${MIN_APPROVAL_IMAGES} pure artworks`);
       }
 
       state.status = 'completed';
@@ -280,8 +441,8 @@ export class WorkflowOrchestrator {
   /**
    * Handle approval and publish
    */
-  async handleApproval(draftId: number): Promise<void> {
-    this.logger.info(`Processing approval for draft ${draftId}`);
+  async handleApproval(draftId: number, featuredImageIndex = 0): Promise<void> {
+    this.logger.info(`Processing approval for draft ${draftId} with featured image ${featuredImageIndex}`);
 
     try {
       initDatabase();
@@ -304,7 +465,7 @@ export class WorkflowOrchestrator {
         hashnodeApiKey,
         hashnodePublicationId
       );
-      const result = await publishing.publish(draftId);
+      const result = await publishing.publish(draftId, featuredImageIndex);
 
       if (result.success) {
         this.logger.info('✓ Article published successfully');
@@ -366,9 +527,9 @@ export class WorkflowOrchestrator {
         }
 
         const drafts = await draftOps.findByArtistId(artist.id);
-        const hasPendingApproval = drafts.some((draft) => draft.status === 'sent');
-        if (hasPendingApproval) {
-          this.logger.warn(`Skipping artist ${artist.id} because there is already a sent draft awaiting approval`);
+        const hasOpenDraft = drafts.some((draft) => draft.status === 'pending' || draft.status === 'sent');
+        if (hasOpenDraft) {
+          this.logger.warn(`Skipping artist ${artist.id} because there is already an open draft awaiting use or approval`);
           continue;
         }
 
@@ -521,6 +682,36 @@ export class WorkflowOrchestrator {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private async getFallbackExcludedArtistIds(
+    pendingReplacementRequests: PendingReplacementRequest[]
+  ): Promise<Set<number>> {
+    const excluded = new Set<number>();
+    const readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+
+    for (const draft of readyPendingDrafts) {
+      excluded.add(draft.artist_id);
+    }
+
+    for (const request of pendingReplacementRequests) {
+      const rejectedDraft = await draftOps.findById(request.draftId);
+      if (rejectedDraft) {
+        excluded.add(rejectedDraft.artist_id);
+      }
+    }
+
+    return excluded;
+  }
+
+  private isNormalSendWindowOpen(appTimezone?: string): boolean {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: appTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      hour: '2-digit',
+      hour12: false,
+    });
+    const hour = Number(formatter.format(new Date()));
+    return hour >= NORMAL_SEND_HOUR;
   }
 
   private async getFailedArtistNamesForDate(workflowDate: string): Promise<Set<string>> {

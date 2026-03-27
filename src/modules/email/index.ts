@@ -16,6 +16,19 @@ export interface SendApprovalEmailOptions {
   images?: Image[];
 }
 
+interface PreparedAttachment {
+  filename: string;
+  content: string;
+  content_id: string;
+  disposition: 'inline';
+  type: string;
+}
+
+interface PreparedImageOption {
+  image: Image;
+  attachment: PreparedAttachment;
+}
+
 const TARGET_APPROVAL_IMAGES = 3;
 const MIN_APPROVAL_IMAGES = 2;
 
@@ -66,8 +79,9 @@ export class EmailModule {
 
     try {
       // Prepare attachments FIRST to know which images succeeded
-      let attachments: any[] = [];
+      let attachments: PreparedAttachment[] = [];
       let successfulImages: Image[] = [];
+      let preparedImageOptions: PreparedImageOption[] = [];
 
       if (!options.images || options.images.length < MIN_APPROVAL_IMAGES) {
         throw new Error(
@@ -80,6 +94,7 @@ export class EmailModule {
         const result = await this.prepareImageAttachments(options.images);
         attachments = result.attachments;
         successfulImages = result.validatedImages;
+        preparedImageOptions = result.preparedImageOptions;
       }
 
       if (successfulImages.length < MIN_APPROVAL_IMAGES) {
@@ -95,7 +110,14 @@ export class EmailModule {
       }
 
       // Generate email template with only successful images
-      const template = await this.generateApprovalTemplate(draft, artist.full_name, successfulImages, sources, options.draftId);
+      const template = await this.generateApprovalTemplate(
+        draft,
+        artist.full_name,
+        successfulImages,
+        sources,
+        options.draftId,
+        preparedImageOptions
+      );
 
       const result = await this.client.emails.send({
         from: config.env.fromEmail,
@@ -134,7 +156,8 @@ export class EmailModule {
     artistName: string,
     images?: Image[],
     sources?: any[],
-    draftId?: number
+    draftId?: number,
+    preparedImageOptions?: PreparedImageOption[]
   ): Promise<EmailTemplate> {
     // Configure marked for better paragraph handling
     marked.setOptions({
@@ -309,12 +332,7 @@ export class EmailModule {
     <div class="approval-section">
       <h3>📝 Article Ready for Review</h3>
       <p>This article about <strong>${artistName}</strong> is ready to publish.</p>
-      <p style="margin: 25px 0;">
-        <a href="${this.buildApproveUrl(draftId)}"
-           style="background-color: #000; color: #fff; padding: 16px 40px; font-family: 'Courier New', monospace; font-size: 1.2em; font-weight: bold; text-decoration: none; border-radius: 4px; display: inline-block;">
-          PUBLICAR ARTIGO
-        </a>
-      </p>
+      ${this.renderApproveButtons(draftId, images, preparedImageOptions)}
       <p style="margin: 15px 0;">
         <a href="${this.buildRejectUrl(draftId)}"
            style="background-color: #fff; color: #cc0000; padding: 14px 36px; font-family: 'Courier New', monospace; font-size: 1em; font-weight: bold; text-decoration: none; border-radius: 4px; display: inline-block; border: 2px solid #cc0000;">
@@ -414,13 +432,55 @@ export class EmailModule {
   /**
    * Build one-click approval URL
    */
-  private buildApproveUrl(draftId?: number): string {
+  private renderApproveButtons(
+    draftId: number | undefined,
+    images?: Image[],
+    preparedImageOptions?: PreparedImageOption[]
+  ): string {
+    const safeImages = images ?? [];
+    const buttonImages = safeImages.length > 0 ? safeImages : [{ url: '', attribution: '' } as Image];
+
+    return buttonImages
+      .map((image, index) => {
+        const label = `PUBLICAR ARTIGO COM A IMAGEM ${index + 1} EM DESTAQUE`;
+        const fileLabel = preparedImageOptions?.[index]?.attachment.filename ?? this.buildImageFileLabel(image, index);
+
+        return `<div style="margin: 18px 0; display: table; width: 100%;">
+        <div style="display: table-cell; width: 132px; vertical-align: middle; padding-right: 16px;">
+          <div style="width: 120px; min-height: 72px; border: 1px solid #d9d9d9; border-radius: 4px; display: block; padding: 10px; box-sizing: border-box; background: #fafafa; color: #555; font-size: 0.85em; line-height: 1.35; word-break: break-word;">
+            ${fileLabel}
+          </div>
+        </div>
+        <div style="display: table-cell; vertical-align: middle; text-align: left;">
+          <a href="${this.buildApproveUrl(draftId, index)}"
+             style="background-color: #000; color: #fff; padding: 16px 24px; font-family: 'Courier New', monospace; font-size: 1em; font-weight: bold; text-decoration: none; border-radius: 4px; display: inline-block;">
+            ${label}
+          </a>
+          <div style="font-size: 0.9em; color: #666; margin-top: 8px;">${image.caption ?? `Imagem ${index + 1}`}</div>
+        </div>
+      </div>`;
+      })
+      .join('\n');
+  }
+
+  private buildImageFileLabel(image: Image, index: number): string {
+    try {
+      const parsed = new URL(image.url);
+      const rawName = parsed.pathname.split('/').pop() || '';
+      return rawName || `imagem-${index + 1}`;
+    } catch {
+      return `imagem-${index + 1}`;
+    }
+  }
+
+  private buildApproveUrl(draftId?: number, featuredImageIndex = 0): string {
     const config = getConfig();
     return this.buildActionUrl(
       'approve',
       draftId,
       config.env.webhookSecret,
-      config.env.appBaseUrl ?? config.env.vercelUrl
+      config.env.appBaseUrl ?? config.env.vercelUrl,
+      featuredImageIndex
     );
   }
 
@@ -438,7 +498,8 @@ export class EmailModule {
     action: 'approve' | 'reject',
     draftId: number | undefined,
     webhookSecret: string | undefined,
-    configuredBaseUrl?: string
+    configuredBaseUrl?: string,
+    featuredImageIndex?: number
   ): string {
     if (!draftId) {
       throw new Error(`Cannot build ${action} URL without draft ID`);
@@ -454,6 +515,9 @@ export class EmailModule {
     const url = new URL(`/api/webhook/${action}`, baseUrl);
     url.searchParams.set('draft', String(draftId));
     url.searchParams.set('token', webhookSecret);
+    if (action === 'approve' && Number.isInteger(featuredImageIndex) && featuredImageIndex! >= 0) {
+      url.searchParams.set('featured', String(featuredImageIndex));
+    }
     const builtUrl = url.toString();
 
     if (!builtUrl.includes('token=')) {
@@ -488,12 +552,14 @@ export class EmailModule {
    * Prepare image attachments with CID for inline embedding
    */
   private async prepareImageAttachments(images: Image[]): Promise<{
-    attachments: any[];
+    attachments: PreparedAttachment[];
     validatedImages: Image[];
+    preparedImageOptions: PreparedImageOption[];
   }> {
     const axios = (await import('axios')).default;
-    const attachments: any[] = [];
+    const attachments: PreparedAttachment[] = [];
     const validatedImages: Image[] = [];
+    const preparedImageOptions: PreparedImageOption[] = [];
     let successCount = 0;
 
     for (let i = 0; i < images.length; i++) {
@@ -543,16 +609,24 @@ export class EmailModule {
         }
 
         // Use successCount for consistent indexing
-        attachments.push({
-          filename: `image${successCount}.jpg`,
+        const filename = this.buildAttachmentFilename(image, successCount, contentType);
+
+        const attachment: PreparedAttachment = {
+          filename,
           content: base64,
           content_id: `image${successCount}`,
           disposition: 'inline',
           type: contentType,
-        });
+        };
+
+        attachments.push(attachment);
 
         // Track which images were successfully validated
         validatedImages.push(image);
+        preparedImageOptions.push({
+          image,
+          attachment,
+        });
 
         successCount++;
         console.log(`  ✓ Attached image ${successCount}/${images.length}`);
@@ -562,6 +636,28 @@ export class EmailModule {
     }
 
     console.log(`  📊 Successfully attached ${successCount}/${images.length} images`);
-    return { attachments, validatedImages };
+    return { attachments, validatedImages, preparedImageOptions };
+  }
+
+  private buildAttachmentFilename(image: Image, index: number, contentType: string): string {
+    const fallbackExtension = this.extensionFromContentType(contentType);
+    const baseLabel = this.buildImageFileLabel(image, index).trim();
+    const hasKnownExtension = /\.[a-z0-9]{2,5}$/i.test(baseLabel);
+    const rawName = hasKnownExtension ? baseLabel : `${baseLabel}.${fallbackExtension}`;
+
+    const sanitized = rawName
+      .replace(/%[0-9a-f]{2}/gi, '-')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    return sanitized || `image-${index + 1}.${fallbackExtension}`;
+  }
+
+  private extensionFromContentType(contentType: string): string {
+    if (contentType.includes('png')) return 'png';
+    if (contentType.includes('webp')) return 'webp';
+    if (contentType.includes('gif')) return 'gif';
+    return 'jpg';
   }
 }
