@@ -25,6 +25,34 @@
       "description": "Visual artists with museum collections"
     },
     {
+      "query": "\"site:masp.org.br OR site:pinacoteca.org.br OR site:museuafrobrasil.org.br OR site:inhotim.org.br\" artista brasileiro acervo obra biografia",
+      "description": "Institutional museum searches across major Brazilian museums"
+    },
+    {
+      "query": "\"site:enciclopedia.itaucultural.org.br OR site:museus.gov.br OR site:gov.br/museus\" artista visual brasileiro biografia obra",
+      "description": "Itaú Cultural and Ibram institutional references"
+    },
+    {
+      "query": "\"site:macniteroi.com.br OR site:museudoamanha.org.br OR site:museuoscarniemeyer.org.br OR site:museugoeldi.br\" artista acervo exposição obra",
+      "description": "Museum and collection pages with artist and artwork records"
+    },
+    {
+      "query": "\"site:mhn.museus.gov.br OR site:museudarepublica.museus.gov.br OR site:museuimperial.museus.gov.br OR site:museudainconfidencia.museus.gov.br\" artista obra acervo",
+      "description": "Federal historic museums and institutional collection pages"
+    },
+    {
+      "query": "\"site:mac.usp.br OR site:museudeartedorio.org.br OR site:mam.ba.gov.br OR site:museudalinguaportuguesa.org.br\" artista brasileiro acervo exposição",
+      "description": "Art and cultural museums with artist records"
+    },
+    {
+      "query": "\"site:museudaimigracao.org.br OR site:museucatavento.org.br OR site:pucrs.br/mct OR site:museudagentesergipana.com.br\" museu acervo artista obra",
+      "description": "Broader museum and collection sources for artist discovery"
+    },
+    {
+      "query": "\"site:museudopontal.org.br\" artista obra acervo arte popular brasileira",
+      "description": "Museu do Pontal collection and folk art artist pages"
+    },
+    {
       "query": "\"artist statement\" OR \"sobre o artista\" Northeast Brazil painter contemporary",
       "description": "Artist statements and bios"
     },

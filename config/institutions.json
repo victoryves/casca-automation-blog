@@ -13,8 +13,104 @@
       "country": "Brazil"
     },
     {
+      "domain": "museuafrobrasil.org.br",
+      "name": "Museu Afro Brasil Emanoel Araujo",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museunacional.ufrj.br",
+      "name": "Museu Nacional (UFRJ)",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "mhn.museus.gov.br",
+      "name": "Museu Histórico Nacional",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudarepublica.museus.gov.br",
+      "name": "Museu da República",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudofutebol.org.br",
+      "name": "Museu do Futebol",
+      "credibility_score": 0.85,
+      "country": "Brazil"
+    },
+    {
+      "domain": "inhotim.org.br",
+      "name": "Instituto Inhotim",
+      "credibility_score": 1.0,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museuimperial.museus.gov.br",
+      "name": "Museu Imperial",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudainconfidencia.museus.gov.br",
+      "name": "Museu da Inconfidência",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudoamanha.org.br",
+      "name": "Museu do Amanhã",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museuoscarniemeyer.org.br",
+      "name": "Museu Oscar Niemeyer (MON)",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museugoeldi.br",
+      "name": "Museu Paraense Emílio Goeldi",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudaamazonia.org.br",
+      "name": "Museu da Amazônia (MUSA)",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "macniteroi.com.br",
+      "name": "Museu de Arte Contemporânea de Niterói (MAC)",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "mac.usp.br",
+      "name": "Museu de Arte Contemporânea da USP",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
       "domain": "mam.org.br",
-      "name": "Museu de Arte Moderna",
+      "name": "Museu de Arte Moderna de São Paulo",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudeartedorio.org.br",
+      "name": "Museu de Arte do Rio",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "mam.ba.gov.br",
+      "name": "Museu de Arte Moderna da Bahia",
       "credibility_score": 0.95,
       "country": "Brazil"
     },
@@ -115,6 +211,42 @@
       "country": "Brazil"
     },
     {
+      "domain": "museudalinguaportuguesa.org.br",
+      "name": "Museu da Língua Portuguesa",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudaimigracao.org.br",
+      "name": "Museu da Imigração",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudopontal.org.br",
+      "name": "Museu do Pontal",
+      "credibility_score": 0.95,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museudagentesergipana.com.br",
+      "name": "Museu da Gente Sergipana",
+      "credibility_score": 0.85,
+      "country": "Brazil"
+    },
+    {
+      "domain": "pucrs.br",
+      "name": "Museu de Ciências e Tecnologia da PUCRS",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "museucatavento.org.br",
+      "name": "Catavento Cultural",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
       "domain": "ccbnb.org.br",
       "name": "Centro Cultural Banco do Nordeste",
       "credibility_score": 0.85,
@@ -142,6 +274,12 @@
       "domain": "museus.gov.br",
       "name": "Instituto Brasileiro de Museus",
       "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
+      "domain": "gov.br",
+      "name": "Governo do Brasil / Ibram",
+      "credibility_score": 0.85,
       "country": "Brazil"
     },
     {
