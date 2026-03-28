@@ -30,18 +30,28 @@ interface DirectImageCandidate {
   objectHref: string;
 }
 
+interface VerificationCacheEntry {
+  verified: boolean;
+  reason: string;
+  cachedAt: string;
+}
+
 export class VisualModule {
   private readonly imagesDir: string;
+  private readonly verificationCachePath: string;
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
   private readonly gemini: GeminiClient;
   private visionUnavailableUntil = 0;
+  private verificationCache = new Map<string, VerificationCacheEntry>();
 
   constructor(geminiApiKey: string, imagesDir = './data/images') {
     this.imagesDir = imagesDir;
+    this.verificationCachePath = path.join(path.dirname(imagesDir), 'image-verification-cache.json');
     this.scraperBridge = new ScraperBridge();
     this.gemini = new GeminiClient(geminiApiKey);
     this.ensureImagesDir();
+    this.loadVerificationCache();
   }
 
   /**
@@ -167,6 +177,16 @@ export class VisualModule {
             }
 
             if (
+              this.isMarketArtworkHost(resolvedCandidate.url) &&
+              !this.assetUrlStronglyTargetsArtist(resolvedCandidate.url, artist.full_name)
+            ) {
+              console.log(
+                `  ✗ Rejected direct-source image from ${source.institution}: Asset URL does not strongly target ${artist.full_name}`
+              );
+              continue;
+            }
+
+            if (
               this.shouldAcceptHighConfidenceTrustedArtwork(
                 source,
                 resolvedCandidate.url,
@@ -268,6 +288,16 @@ export class VisualModule {
               continue;
             }
 
+            if (
+              this.isMarketArtworkHost(normalizedUrl) &&
+              !this.assetUrlStronglyTargetsArtist(normalizedUrl, artist.full_name)
+            ) {
+              console.log(
+                `  ✗ Rejected from ${source.institution}: Asset URL does not strongly target ${artist.full_name}`
+              );
+              continue;
+            }
+
             // Even verified sources need quality check (could be banners/thumbnails)
             if (
               this.shouldAcceptHighConfidenceTrustedArtwork(
@@ -340,6 +370,17 @@ export class VisualModule {
       const artworkKey = this.buildArtworkKey(wikiImage.url, wikiImage.url, wikiImage.title ?? wikiImage.description);
       if (selectedArtworkKeys.has(artworkKey)) continue;
 
+      if (this.shouldAcceptHeuristicWebCandidate(wikiImage, artist)) {
+        images.push({
+          url: wikiImage.url,
+          caption: wikiImage.description ?? `Artwork by ${artist.full_name}`,
+          attribution: this.generateAttribution(wikiImage),
+        });
+        selectedArtworkKeys.add(artworkKey);
+        console.log('  ✓ Wikimedia image accepted by heuristic filter');
+        continue;
+      }
+
       const verification = await this.verifyImageWithClaude(wikiImage.url, artist);
       if (verification.verified) {
         images.push({
@@ -370,31 +411,47 @@ export class VisualModule {
       return;
     }
 
-    const query = this.buildSearchQuery(artist);
-    console.log(`  Searching web: "${query}"`);
+    const queries = this.buildWebImageQueries(artist);
+    const remainingSlots = maxImages - images.length;
+    const searchCandidates = await this.collectWebSearchCandidates(
+      queries,
+      Math.max(remainingSlots * 6, 12),
+      artist
+    );
 
-    const searchResult = await this.scraperBridge.searchImages(query, 'all', (maxImages - images.length) * 2);
-
-    if (!searchResult.success || searchResult.images.length === 0) {
+    if (searchCandidates.length === 0) {
       console.log('  No web search results');
       return;
     }
 
-    console.log(`  Found ${searchResult.images.length} web search candidates`);
+    console.log(`  Found ${searchCandidates.length} web search candidates`);
 
-    for (const img of searchResult.images) {
+    for (const img of searchCandidates) {
       if (images.length >= maxImages) break;
       const normalizedUrl = this.normalizeImageUrl(img.url);
       const artworkKey = this.buildArtworkKey(normalizedUrl, img.source_page, img.caption);
       if (selectedArtworkKeys.has(artworkKey)) continue;
+      if (this.isSocialSource(img.source_page, img.source_page)) continue;
 
       const prevalidated = await this.prevalidateSourceImage(
         normalizedUrl,
         `${normalizedUrl} ${img.caption ?? ''} ${img.source_page ?? ''}`,
-        true
+        true,
+        this.webCandidateTargetsArtist(img, artist)
       );
       if (!prevalidated.ok) {
         console.log(`  ✗ Web image rejected: ${prevalidated.reason}`);
+        continue;
+      }
+
+      if (this.shouldAcceptHeuristicWebCandidate(img, artist)) {
+        images.push({
+          url: normalizedUrl,
+          caption: img.caption || `Artwork by ${artist.full_name}`,
+          attribution: 'Accepted by heuristic filter before Gemini vision. Educational use.',
+        });
+        selectedArtworkKeys.add(artworkKey);
+        console.log('  ✓ Web image accepted by heuristic filter');
         continue;
       }
 
@@ -411,6 +468,137 @@ export class VisualModule {
         console.log(`  ✗ Web image rejected: ${verification.reason}`);
       }
     }
+  }
+
+  private async collectWebSearchCandidates(
+    queries: string[],
+    desiredLimit: number,
+    artist: ArtistInfo
+  ): Promise<Array<{ url: string; caption: string; source_page: string }>> {
+    const candidates: Array<{ url: string; caption: string; source_page: string }> = [];
+    const seen = new Set<string>();
+
+    for (const query of queries) {
+      console.log(`  Searching web: "${query}"`);
+      const searchResult = await this.scraperBridge.searchImages(query, 'all', Math.max(desiredLimit, 6));
+      if (!searchResult.success || searchResult.images.length === 0) {
+        continue;
+      }
+
+      for (const image of searchResult.images) {
+        const normalizedUrl = this.normalizeImageUrl(image.url);
+        const key = this.buildArtworkKey(normalizedUrl, image.source_page, image.caption);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({
+          url: normalizedUrl,
+          caption: image.caption,
+          source_page: image.source_page,
+        });
+      }
+
+      if (candidates.length >= desiredLimit) {
+        break;
+      }
+    }
+
+    const topLimit = Math.min(Math.max(5, Math.ceil(desiredLimit / 2)), 5);
+
+    return candidates
+      .sort((a, b) => this.scoreWebCandidate(b, artist) - this.scoreWebCandidate(a, artist))
+      .slice(0, topLimit);
+  }
+
+  private buildWebImageQueries(artist: ArtistInfo): string[] {
+    const artistName = artist.full_name.trim();
+    const practice = artist.visual_practice?.trim();
+    const stateOrCity = artist.birthplace_state?.trim() || artist.birthplace_city?.trim() || '';
+    const queries = [
+      `${artistName} art`,
+      `${artistName} artwork`,
+      `${artistName} obra`,
+      `${artistName} artista`,
+      practice ? `${artistName} ${practice} art` : '',
+      practice ? `${artistName} ${practice} obra` : '',
+      stateOrCity ? `${artistName} art ${stateOrCity}` : '',
+      stateOrCity ? `${artistName} obra ${stateOrCity}` : '',
+    ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
+
+    return queries;
+  }
+
+  private scoreWebCandidate(
+    candidate: { url: string; caption: string; source_page: string },
+    artist: ArtistInfo
+  ): number {
+    const normalized = this.normalizeText(
+      `${candidate.url} ${candidate.caption} ${candidate.source_page}`
+    );
+    let score = 0;
+
+    if (!this.isSocialSource(candidate.source_page, candidate.source_page)) score += 4;
+    if (this.webCandidateTargetsArtist(candidate, artist)) score += 4;
+    if (this.containsArtworkSignals(normalized)) score += 3;
+    if (this.isPhotographyPractice(artist)) score += 1;
+    if (this.containsNonArtworkSignals(normalized, this.isPhotographyPractice(artist))) score -= 6;
+
+    return score;
+  }
+
+  private webCandidateTargetsArtist(
+    candidate: { url: string; caption: string; source_page: string },
+    artist: ArtistInfo
+  ): boolean {
+    const haystack = this.normalizeText(
+      `${candidate.url} ${candidate.caption} ${candidate.source_page}`
+    );
+    return this.metadataMatchesArtist(haystack, artist.full_name);
+  }
+
+  private shouldAcceptHeuristicWebCandidate(
+    candidate: { url: string; caption?: string; source_page?: string; description?: string },
+    artist: ArtistInfo
+  ): boolean {
+    const normalized = this.normalizeText(
+      `${candidate.url} ${candidate.caption ?? ''} ${candidate.source_page ?? ''} ${candidate.description ?? ''}`
+    );
+
+    if (this.isSocialSource(candidate.source_page ?? '', candidate.source_page ?? '')) {
+      return false;
+    }
+
+    if (!this.webCandidateTargetsArtist(
+      {
+        url: candidate.url,
+        caption: candidate.caption ?? candidate.description ?? '',
+        source_page: candidate.source_page ?? candidate.url,
+      },
+      artist
+    )) {
+      return false;
+    }
+
+    if (this.containsNonArtworkSignals(normalized, this.isPhotographyPractice(artist))) {
+      return false;
+    }
+
+    if (this.isPhotographyPractice(artist)) {
+      return (
+        normalized.includes('fotografia') ||
+        normalized.includes('photography') ||
+        normalized.includes('photo') ||
+        normalized.includes('series')
+      );
+    }
+
+    return this.containsArtworkSignals(normalized) && this.scoreWebCandidate(
+      {
+        url: candidate.url,
+        caption: candidate.caption ?? candidate.description ?? '',
+        source_page: candidate.source_page ?? candidate.url,
+      },
+      artist
+    ) >= 8;
   }
 
   private isTrustedSource(source: Source): boolean {
@@ -498,7 +686,7 @@ export class VisualModule {
 
     const normalizedContext = this.normalizeText(`${url} ${contextText}`);
 
-    if (this.containsNonArtworkSignals(normalizedContext)) {
+    if (this.containsNonArtworkSignals(normalizedContext, false)) {
       return { ok: false, reason: 'Context suggests portrait, author photo, or book cover instead of artwork' };
     }
 
@@ -512,14 +700,12 @@ export class VisualModule {
     return { ok: true, reason: 'Image passed direct-source validation' };
   }
 
-  private containsNonArtworkSignals(text: string): boolean {
+  private containsNonArtworkSignals(text: string, allowPortraitArtwork = false): boolean {
     const blockedSignals = [
       'author photo',
       'artist photo',
       'photo of the artist',
       'artist portrait',
-      'portrait',
-      'retrato',
       'selfie',
       'profile',
       'headshot',
@@ -605,6 +791,10 @@ export class VisualModule {
       'workshop portrait',
       'interview',
     ];
+
+    if (!allowPortraitArtwork) {
+      blockedSignals.push('portrait', 'retrato');
+    }
 
     return blockedSignals.some((signal) => text.includes(signal));
   }
@@ -832,6 +1022,10 @@ export class VisualModule {
       return false;
     }
 
+    if (this.isMarketArtworkHost(imageUrl) && !this.assetUrlStronglyTargetsArtist(imageUrl, metadataText)) {
+      return false;
+    }
+
     const normalizedMetadata = this.normalizeText(
       `${metadataText} ${imageUrl} ${source.url} ${objectHref} ${source.content_summary ?? ''}`
     );
@@ -923,6 +1117,39 @@ export class VisualModule {
     } catch {
       return false;
     }
+  }
+
+  private isMarketArtworkHost(url: string): boolean {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      return (
+        hostname === 'www.escritoriodearte.com' ||
+        hostname.endsWith('.escritoriodearte.com') ||
+        hostname === 'dailyartfair.com' ||
+        hostname.endsWith('.dailyartfair.com')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private assetUrlStronglyTargetsArtist(url: string, artistContext: string): boolean {
+    const normalizedUrl = this.normalizeText(url).replace(/[^a-z0-9]+/g, ' ');
+    const normalizedArtist = this.normalizeText(artistContext).replace(/[^a-z0-9]+/g, ' ');
+    const artistTokens = normalizedArtist.split(/\s+/).filter((token) => token.length >= 4);
+
+    if (artistTokens.length === 0) {
+      return false;
+    }
+
+    const surname = artistTokens[artistTokens.length - 1];
+    const givenNames = artistTokens.slice(0, -1);
+
+    if (!normalizedUrl.includes(surname)) {
+      return false;
+    }
+
+    return givenNames.some((token) => normalizedUrl.includes(token));
   }
 
   private isStrongArtworkAssetUrl(url: string): boolean {
@@ -1309,6 +1536,15 @@ export class VisualModule {
       return { verified: false, reason: 'Gemini vision temporarily unavailable due to quota' };
     }
 
+    const cacheKey = this.buildVerificationCacheKey(imageUrl, artist);
+    const cached = this.verificationCache.get(cacheKey);
+    if (cached) {
+      return {
+        verified: cached.verified,
+        reason: `${cached.reason} (cached)`,
+      };
+    }
+
     try {
       // Download image as base64
       const imageData = await this.downloadImageAsBase64(imageUrl);
@@ -1320,21 +1556,15 @@ export class VisualModule {
       const locationInfo = artist.birthplace_city
         ? ` Based in ${artist.birthplace_city}${artist.birthplace_state ? `, ${artist.birthplace_state}` : ''}.`
         : '';
-
-      const text = await this.gemini.generateTextFromImage({
-        model: 'gemini-2.5-flash',
-        maxOutputTokens: 200,
-        temperature: 0,
-        imageBase64: imageData.base64,
-        mimeType: imageData.mediaType,
-        prompt: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
-
-Reply with exactly one line in this format:
-VERIFIED|brief explanation
-or
-REJECTED|brief explanation
-
-Verify ALL of these criteria (reject if ANY fails):
+      const photographyMode = this.isPhotographyPractice(artist);
+      const criteriaText = photographyMode
+        ? `Verify ALL of these criteria (reject if ANY fails):
+1. PHOTOGRAPHIC ARTWORK: This must plausibly be a photographic artwork by "${artist.full_name}", not a photo of the artist, a book cover, poster, UI element, logo, screenshot, or promo asset.
+2. ACCEPT documentary or artistic photographs, including people, places, rituals, or scenes, if they plausibly look like the artist's work.
+3. REJECT selfies, headshots, artist portraits, interviews, event photos, installation shots with lots of room around them, framed works on walls, mockups, catalog pages, or screenshots.
+4. ATTRIBUTION: The image should plausibly match the artist's style or authorship. If you can't confirm, reject.
+5. COMPLETE AND CLEAR: The image should be one artwork, not a collage or thumbnail, and it must be sharp enough to read as a finished work.`
+        : `Verify ALL of these criteria (reject if ANY fails):
 1. ARTWORK: This must be an artwork (painting, print, woodcut print, etc.), not a photo of a person, UI element, logo, or banner.
 2. PAPER PRINT ONLY — NOT A PHYSICAL OBJECT: Look carefully at the image. Ask yourself: "Am I looking at ink on paper, or a photo of a 3D object?"
    - ACCEPT: A print on paper (ink transferred from a woodblock to paper). The background should be the paper itself (white, cream, off-white). The image looks flat, like a scan or a straight-on photo of paper.
@@ -1353,7 +1583,22 @@ Verify ALL of these criteria (reject if ANY fails):
      * The artwork is small and "floating" within a much larger blank image
    A thin sliver of paper edge or minimal texture at the border is OK — what matters is that the artwork dominates the image. Close-up crops that fill the frame are ideal.
 5. COMPLETE: The artwork should show ONE piece, not a collage of multiple works or a tiny thumbnail.
-6. HIGH RESOLUTION AND SHARP: The image must be crisp with clearly visible fine details and textures. REJECT if the image looks soft, fuzzy, compressed, low-resolution, or if you cannot make out fine lines and details clearly.
+6. HIGH RESOLUTION AND SHARP: The image must be crisp with clearly visible fine details and textures. REJECT if the image looks soft, fuzzy, compressed, low-resolution, or if you cannot make out fine lines and details clearly.`;
+
+      const text = await this.gemini.generateTextFromImage({
+        model: 'gemini-2.5-flash',
+        maxOutputTokens: 200,
+        temperature: 0,
+        imageBase64: imageData.base64,
+        mimeType: imageData.mediaType,
+        prompt: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
+
+Reply with exactly one line in this format:
+VERIFIED|brief explanation
+or
+REJECTED|brief explanation
+
+${criteriaText}
 
 When in doubt on any criterion, say false.`,
       });
@@ -1361,25 +1606,36 @@ When in doubt on any criterion, say false.`,
       const normalized = text.trim().replace(/\s+/g, ' ');
       const verifiedMatch = normalized.match(/^VERIFIED\|(.*)$/i);
       if (verifiedMatch) {
-        return {
+        const result = {
           verified: true,
           reason: verifiedMatch[1]?.trim() || 'Verified by Gemini vision',
         };
+        this.setVerificationCache(cacheKey, result);
+        return result;
       }
 
       const rejectedMatch = normalized.match(/^REJECTED\|(.*)$/i);
       if (rejectedMatch) {
-        return {
+        const result = {
           verified: false,
           reason: rejectedMatch[1]?.trim() || 'Rejected by Gemini vision',
         };
+        this.setVerificationCache(cacheKey, result);
+        return result;
       }
 
-      return { verified: false, reason: `Could not parse verification response: ${normalized.slice(0, 120)}` };
+      const result = {
+        verified: false,
+        reason: `Could not parse verification response: ${normalized.slice(0, 120)}`,
+      };
+      this.setVerificationCache(cacheKey, result);
+      return result;
     } catch (error) {
       console.warn(`  Gemini vision verification failed for ${imageUrl}:`, error);
       this.noteVisionFailure(error);
-      return { verified: false, reason: 'Verification error — rejected for safety' };
+      const result = { verified: false, reason: 'Verification error — rejected for safety' };
+      this.setVerificationCache(cacheKey, result);
+      return result;
     }
   }
 
@@ -1550,9 +1806,65 @@ When in doubt on any criterion, say false.`,
       if (!fs.existsSync(this.imagesDir)) {
         fs.mkdirSync(this.imagesDir, { recursive: true });
       }
+      const cacheDir = path.dirname(this.verificationCachePath);
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
     } catch {
       // Ignore in serverless environments where filesystem is read-only
     }
+  }
+
+  private loadVerificationCache(): void {
+    try {
+      if (!fs.existsSync(this.verificationCachePath)) {
+        return;
+      }
+
+      const raw = fs.readFileSync(this.verificationCachePath, 'utf8');
+      const parsed = JSON.parse(raw) as Record<string, VerificationCacheEntry>;
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!value || typeof value.verified !== 'boolean' || typeof value.reason !== 'string') {
+          continue;
+        }
+        this.verificationCache.set(key, value);
+      }
+    } catch {
+      // Ignore corrupt cache and keep going.
+    }
+  }
+
+  private persistVerificationCache(): void {
+    try {
+      const payload = Object.fromEntries(this.verificationCache.entries());
+      fs.writeFileSync(this.verificationCachePath, JSON.stringify(payload, null, 2));
+    } catch {
+      // Ignore cache persistence errors in serverless/read-only environments.
+    }
+  }
+
+  private buildVerificationCacheKey(url: string, artist: ArtistInfo): string {
+    return `${this.normalizeText(url)}::${this.normalizeArtistPractice(artist)}`;
+  }
+
+  private setVerificationCache(
+    key: string,
+    result: { verified: boolean; reason: string }
+  ): void {
+    this.verificationCache.set(key, {
+      verified: result.verified,
+      reason: result.reason,
+      cachedAt: new Date().toISOString(),
+    });
+    this.persistVerificationCache();
+  }
+
+  private isPhotographyPractice(artist: ArtistInfo): boolean {
+    return this.normalizeArtistPractice(artist).includes('fot');
+  }
+
+  private normalizeArtistPractice(artist: ArtistInfo): string {
+    return this.normalizeText(artist.visual_practice ?? '');
   }
 
   /**

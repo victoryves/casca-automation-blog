@@ -16,6 +16,7 @@ import { VisualModule } from '../modules/visual/index.js';
 import { EmailModule } from '../modules/email/index.js';
 import { EmergencyFallbackModule } from '../modules/emergency/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
+import { PublicationHistoryModule } from '../modules/publication-history/index.js';
 import { queueRejectedDraftReplacement } from '../modules/rejections/index.js';
 import { ScraperBridge } from '../modules/scraper-bridge/index.js';
 import { Logger } from '../utils/logger.js';
@@ -40,9 +41,11 @@ const TARGET_READY_PENDING_DRAFTS = 3;
 export class WorkflowOrchestrator {
   private logger: Logger;
   private config: ReturnType<typeof getConfig> | null;
+  private publicationHistory: PublicationHistoryModule | null;
 
   constructor() {
     this.config = null;
+    this.publicationHistory = null;
     this.logger = new Logger(
       './logs',
       ((process.env.LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ?? 'info')
@@ -507,6 +510,7 @@ export class WorkflowOrchestrator {
     if (artists.length === 0) return artists;
 
     const excludedArtistNames = await this.getPreviouslySentArtistNames();
+    const externallyPublishedHaystacks = await this.getPublishedBlogHaystacks();
     const failedArtistNames = await this.getFailedArtistNamesForDate(workflowDate);
     const filtered: Artist[] = [];
 
@@ -516,6 +520,13 @@ export class WorkflowOrchestrator {
         const normalizedArtistName = this.normalizeArtistName(artist.full_name);
         if (excludedArtistNames.has(normalizedArtistName)) {
           this.logger.warn(`Skipping artist ${artist.id} (${artist.full_name}) because this artist was already emailed before`);
+          continue;
+        }
+
+        if (this.isArtistPublishedInExternalBlog(artist.full_name, externallyPublishedHaystacks)) {
+          this.logger.warn(
+            `Skipping artist ${artist.id} (${artist.full_name}) because this artist already appears in the published blog history`
+          );
           continue;
         }
 
@@ -684,6 +695,31 @@ export class WorkflowOrchestrator {
       .toLowerCase();
   }
 
+  private async getPublishedBlogHaystacks(): Promise<string[]> {
+    try {
+      return await this.ensurePublicationHistory().getPublishedPostHaystacks();
+    } catch (error) {
+      this.logger.warn('Failed to load external publication history', error);
+      return [];
+    }
+  }
+
+  private isArtistPublishedInExternalBlog(
+    artistName: string,
+    publishedHaystacks: string[]
+  ): boolean {
+    if (publishedHaystacks.length === 0) {
+      return false;
+    }
+
+    const normalizedArtistName = this.normalizeArtistName(artistName);
+    if (!normalizedArtistName) {
+      return false;
+    }
+
+    return publishedHaystacks.some((haystack) => haystack.includes(normalizedArtistName));
+  }
+
   private async getFallbackExcludedArtistIds(
     pendingReplacementRequests: PendingReplacementRequest[]
   ): Promise<Set<number>> {
@@ -757,6 +793,19 @@ export class WorkflowOrchestrator {
     }
 
     return this.config;
+  }
+
+  private ensurePublicationHistory(): PublicationHistoryModule {
+    if (!this.publicationHistory) {
+      const config = this.ensureConfig();
+      this.publicationHistory = new PublicationHistoryModule({
+        rssUrl: config.env.rssUrl,
+        hashnodeApiKey: config.env.hashnodeApiKey,
+        hashnodePublicationId: config.env.hashnodePublicationId,
+      });
+    }
+
+    return this.publicationHistory;
   }
 
   private isSocialSource(url: string, institution = ''): boolean {
