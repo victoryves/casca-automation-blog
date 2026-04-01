@@ -6,7 +6,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { initDatabase, closeDatabase } from '../db/supabase.js';
+import { initDatabase, closeDatabase } from '../db/local.js';
 import { artistOps, draftOps, publishingOps, sourceOps } from '../db/operations/index.js';
 import { getConfig } from '../config/index.js';
 import { DiscoveryModule } from '../modules/discovery/index.js';
@@ -90,7 +90,11 @@ export class WorkflowOrchestrator {
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
       const sendWindowOpen = this.isNormalSendWindowOpen(config.env.appTimezone);
-      let readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+      const blockedArtistNames = new Set<string>([
+        ...(await this.getPreviouslySentArtistNames()),
+        ...(await this.getOpenDraftArtistNames()),
+      ]);
+      let readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
       let readyPendingDraft = readyPendingDrafts[0] ?? null;
       let readyPendingCount = readyPendingDrafts.length;
       let emailSentToday = await email.emailSentToday();
@@ -110,6 +114,10 @@ export class WorkflowOrchestrator {
           state.status = 'awaiting_approval';
           emailSentToday = true;
           sendStillNeeded = false;
+          const preparedArtist = await artistOps.findById(readyPendingDraft.artist_id);
+          if (preparedArtist?.full_name) {
+            blockedArtistNames.add(this.normalizeArtistName(preparedArtist.full_name));
+          }
         } catch (preparedDraftError) {
           const message =
             preparedDraftError instanceof Error
@@ -131,7 +139,7 @@ export class WorkflowOrchestrator {
           await draftOps.delete(readyPendingDraft.id!);
         }
 
-        readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+        readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
         readyPendingDraft = readyPendingDrafts[0] ?? null;
         readyPendingCount = readyPendingDrafts.length;
 
@@ -191,7 +199,7 @@ export class WorkflowOrchestrator {
 
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
-      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
+      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date, blockedArtistNames);
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
 
       const maxDiscoveryAttempts = 10;
@@ -234,7 +242,7 @@ export class WorkflowOrchestrator {
               this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
 
               verifiedArtists = await artistOps.findVerifiedUnpublished();
-              verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date);
+              verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date, blockedArtistNames);
 
               if (verifiedArtists.length > 0) {
                 this.logger.info(`✓ Found ${verifiedArtists.length} verified artist(s) after ${discoveryAttempts} attempt(s)`);
@@ -258,6 +266,14 @@ export class WorkflowOrchestrator {
         const selectedArtist = verifiedArtists.shift();
         if (!selectedArtist) {
           break;
+        }
+
+        const normalizedSelectedArtistName = this.normalizeArtistName(selectedArtist.full_name);
+        if (blockedArtistNames.has(normalizedSelectedArtistName)) {
+          this.logger.warn(
+            `Skipping artist ${selectedArtist.id} (${selectedArtist.full_name}) because this artist is already blocked in the current workflow run`
+          );
+          continue;
         }
 
         state.artist_id = selectedArtist.id;
@@ -326,6 +342,7 @@ export class WorkflowOrchestrator {
             sendStillNeeded = false;
             emailSentToday = true;
             completed = true;
+            blockedArtistNames.add(normalizedSelectedArtistName);
 
             if (pendingReplacementRequests.length > 0) {
               const oldestPendingRequest = pendingReplacementRequests[0];
@@ -344,6 +361,7 @@ export class WorkflowOrchestrator {
             readyPendingCount++;
             preparationSlotsNeeded = Math.max(0, TARGET_READY_PENDING_DRAFTS - readyPendingCount);
             completed = true;
+            blockedArtistNames.add(normalizedSelectedArtistName);
           }
         } catch (artistError) {
           if (currentDraftId) {
@@ -505,11 +523,13 @@ export class WorkflowOrchestrator {
   private async filterArtistsWithSources(
     artists: Artist[],
     minSources: number,
-    workflowDate: string
+    workflowDate: string,
+    blockedArtistNames: Set<string> = new Set<string>()
   ): Promise<Artist[]> {
     if (artists.length === 0) return artists;
 
     const excludedArtistNames = await this.getPreviouslySentArtistNames();
+    const openDraftArtistNames = await this.getOpenDraftArtistNames();
     const externallyPublishedHaystacks = await this.getPublishedBlogHaystacks();
     const failedArtistNames = await this.getFailedArtistNamesForDate(workflowDate);
     const filtered: Artist[] = [];
@@ -518,8 +538,22 @@ export class WorkflowOrchestrator {
       if (!artist.id) continue;
       try {
         const normalizedArtistName = this.normalizeArtistName(artist.full_name);
+        if (blockedArtistNames.has(normalizedArtistName)) {
+          this.logger.warn(
+            `Skipping artist ${artist.id} (${artist.full_name}) because this artist is blocked in the current workflow run`
+          );
+          continue;
+        }
+
         if (excludedArtistNames.has(normalizedArtistName)) {
           this.logger.warn(`Skipping artist ${artist.id} (${artist.full_name}) because this artist was already emailed before`);
+          continue;
+        }
+
+        if (openDraftArtistNames.has(normalizedArtistName)) {
+          this.logger.warn(
+            `Skipping artist ${artist.id} (${artist.full_name}) because this artist already has an open draft by name`
+          );
           continue;
         }
 
@@ -684,6 +718,90 @@ export class WorkflowOrchestrator {
     }
 
     return seenNames;
+  }
+
+  private async getOpenDraftArtistNames(): Promise<Set<string>> {
+    const pendingDrafts = await draftOps.findByStatus('pending');
+    const sentDrafts = await draftOps.findByStatus('sent');
+    const seenNames = new Set<string>();
+
+    for (const draft of [...pendingDrafts, ...sentDrafts]) {
+      const artist = await artistOps.findById(draft.artist_id);
+      if (!artist?.full_name) {
+        continue;
+      }
+
+      seenNames.add(this.normalizeArtistName(artist.full_name));
+    }
+
+    return seenNames;
+  }
+
+  private async dedupeReadyPendingDraftsByArtistName<T extends { artist_id: number }>(
+    drafts: T[]
+  ): Promise<T[]> {
+    const deduped: T[] = [];
+    const seenNames = new Set<string>();
+
+    for (const draft of drafts) {
+      const artist = await artistOps.findById(draft.artist_id);
+      const normalizedName = artist?.full_name ? this.normalizeArtistName(artist.full_name) : '';
+
+      if (!normalizedName) {
+        deduped.push(draft);
+        continue;
+      }
+
+      if (seenNames.has(normalizedName)) {
+        continue;
+      }
+
+      seenNames.add(normalizedName);
+      deduped.push(draft);
+    }
+
+    return deduped;
+  }
+
+  private async loadUniqueReadyPendingDrafts(): Promise<Array<Awaited<ReturnType<typeof draftOps.findReadyPendingDrafts>>[number]>> {
+    const readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+    return this.pruneDuplicatePendingDraftsByArtistName(readyPendingDrafts);
+  }
+
+  private async pruneDuplicatePendingDraftsByArtistName<T extends { id?: number; artist_id: number }>(
+    drafts: T[]
+  ): Promise<T[]> {
+    const deduped: T[] = [];
+    const seenNames = new Set<string>();
+
+    for (const draft of drafts) {
+      const artist = await artistOps.findById(draft.artist_id);
+      const normalizedName = artist?.full_name ? this.normalizeArtistName(artist.full_name) : '';
+
+      if (!normalizedName) {
+        deduped.push(draft);
+        continue;
+      }
+
+      if (seenNames.has(normalizedName)) {
+        if (draft.id) {
+          try {
+            await draftOps.delete(draft.id);
+            this.logger.warn(
+              `Deleted duplicate pending draft ${draft.id} for artist ${artist?.full_name ?? draft.artist_id}`
+            );
+          } catch (error) {
+            this.logger.warn(`Failed to delete duplicate pending draft ${draft.id}`, error);
+          }
+        }
+        continue;
+      }
+
+      seenNames.add(normalizedName);
+      deduped.push(draft);
+    }
+
+    return deduped;
   }
 
   private normalizeArtistName(name: string): string {

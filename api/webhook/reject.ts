@@ -8,7 +8,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { draftOps } from '../../src/db/operations/index.js';
-import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../../src/db/local.js';
 import { queueRejectedDraftReplacement } from '../../src/modules/rejections/index.js';
 
 // Fast webhook: queue the replacement and return immediately
@@ -32,7 +32,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   try {
     initDatabase();
 
-    // Check draft exists and is in "sent" status
+    // Check draft exists and is in "sent" or "approved" status
     const draft = await draftOps.findById(draftId);
     if (!draft) {
       closeDatabase();
@@ -44,9 +44,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return res.status(200).send(page('Already Rejected', `This draft was already rejected. A new article is being prepared.`));
     }
 
-    if (draft.status !== 'sent') {
+    if (draft.status !== 'sent' && draft.status !== 'approved') {
       closeDatabase();
-      return res.status(400).send(page('Invalid Status', `Draft is "${draft.status}", expected "sent".`));
+      return res
+        .status(400)
+        .send(page('Invalid Status', `Draft is "${draft.status}", expected "sent" or "approved".`));
     }
 
     console.log(`Rejecting draft ${draftId}: ${draft.title}`);

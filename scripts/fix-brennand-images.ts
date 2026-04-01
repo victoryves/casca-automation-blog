@@ -1,19 +1,19 @@
 #!/usr/bin/env tsx
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { loadConfig } from '../src/config/index.js';
 import { EmailModule } from '../src/modules/email/index.js';
 import { VisualModule } from '../src/modules/visual/index.js';
 import { draftOps } from '../src/db/operations/index.js';
 
 const config = loadConfig();
-initDatabase({ path: config.env.databasePath });
+initDatabase();
 
 async function fixImages() {
   console.log('🔧 Fixing Francisco Brennand images...\n');
 
   // Source fresh images
-  const visualModule = new VisualModule(config.env.anthropicApiKey);
+  const visualModule = new VisualModule(config.env.geminiApiKey);
   console.log('🖼️  Sourcing fresh images...');
   const allImages = await visualModule.sourceImages(
     { full_name: 'Francisco Brennand' },

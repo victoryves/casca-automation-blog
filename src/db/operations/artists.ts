@@ -1,8 +1,8 @@
 /**
- * Artist Database Operations - Supabase
+ * Artist Database Operations - SQLite
  */
 
-import { getSupabase } from '../supabase.js';
+import { query } from '../client.js';
 import type { Artist, ArtistStatus } from '../../types/index.js';
 
 export const artistOps = {
@@ -10,199 +10,111 @@ export const artistOps = {
    * Create a new artist
    */
   async create(artist: Omit<Artist, 'id'>): Promise<number> {
-    const supabase = getSupabase();
+    const result = query.run(
+      `INSERT INTO artists (full_name, birthplace_city, birthplace_state, visual_practice, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        artist.full_name,
+        artist.birthplace_city ?? null,
+        artist.birthplace_state ?? null,
+        artist.visual_practice ?? null,
+        artist.status ?? 'discovered',
+      ]
+    );
 
-    const { data, error } = await supabase
-      .from('artists')
-      .insert({
-        full_name: artist.full_name,
-        birthplace_city: artist.birthplace_city ?? null,
-        birthplace_state: artist.birthplace_state ?? null,
-        visual_practice: artist.visual_practice ?? null,
-        status: artist.status ?? 'discovered',
-      })
-      .select('id')
-      .single();
-
-    if (error) {
-      throw new Error(`Failed to create artist: ${error.message}`);
-    }
-
-    return data.id;
+    return Number(result.lastInsertRowid);
   },
 
   /**
    * Find artist by ID
    */
   async findById(id: number): Promise<Artist | null> {
-    const supabase = getSupabase();
-
-    const { data, error } = await supabase
-      .from('artists')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        // Not found
-        return null;
-      }
-      throw new Error(`Failed to find artist: ${error.message}`);
-    }
-
-    return data as Artist;
+    const row = query.get<Artist>(`SELECT * FROM artists WHERE id = ?`, [id]);
+    return row ?? null;
   },
 
   /**
    * Find artist by name and city
    */
   async findByNameAndCity(fullName: string, city?: string): Promise<Artist | null> {
-    const supabase = getSupabase();
-
-    let query = supabase
-      .from('artists')
-      .select('*')
-      .eq('full_name', fullName);
-
     if (city) {
-      query = query.eq('birthplace_city', city);
+      const row = query.get<Artist>(
+        `SELECT * FROM artists WHERE full_name = ? AND birthplace_city = ?`,
+        [fullName, city]
+      );
+      return row ?? null;
     }
 
-    const { data, error } = await query.maybeSingle();
-
-    if (error) {
-      throw new Error(`Failed to find artist: ${error.message}`);
-    }
-
-    return data as Artist | null;
+    const row = query.get<Artist>(`SELECT * FROM artists WHERE full_name = ?`, [fullName]);
+    return row ?? null;
   },
 
   /**
    * Get all artists by status
    */
   async findByStatus(status: ArtistStatus): Promise<Artist[]> {
-    const supabase = getSupabase();
-
-    const { data, error } = await supabase
-      .from('artists')
-      .select('*')
-      .eq('status', status)
-      .order('discovered_at', { ascending: true });
-
-    if (error) {
-      throw new Error(`Failed to find artists by status: ${error.message}`);
-    }
-
-    return data as Artist[];
+    return query.all<Artist>(
+      `SELECT * FROM artists WHERE status = ? ORDER BY discovered_at ASC`,
+      [status]
+    );
   },
 
   /**
    * Get verified but unpublished artists
    */
   async findVerifiedUnpublished(): Promise<Artist[]> {
-    const supabase = getSupabase();
-
-    const { data, error } = await supabase
-      .from('artists')
-      .select('*')
-      .eq('status', 'verified')
-      .order('discovered_at', { ascending: true });
-
-    if (error) {
-      throw new Error(`Failed to find verified artists: ${error.message}`);
-    }
-
-    return data as Artist[];
+    return query.all<Artist>(
+      `SELECT * FROM artists WHERE status = 'verified' ORDER BY discovered_at ASC`
+    );
   },
 
   /**
    * Update artist status
    */
   async updateStatus(id: number, status: ArtistStatus): Promise<void> {
-    const supabase = getSupabase();
-
-    const updates: any = { status };
-
     if (status === 'published') {
-      updates.published_at = new Date().toISOString();
+      query.run(
+        `UPDATE artists SET status = ?, published_at = ? WHERE id = ?`,
+        [status, new Date().toISOString(), id]
+      );
+      return;
     }
 
-    const { error } = await supabase
-      .from('artists')
-      .update(updates)
-      .eq('id', id);
-
-    if (error) {
-      throw new Error(`Failed to update artist status: ${error.message}`);
-    }
+    query.run(`UPDATE artists SET status = ? WHERE id = ?`, [status, id]);
   },
 
   /**
    * Update artist metadata JSON
    */
   async updateMetadata(id: number, metadata: Record<string, unknown> | null): Promise<void> {
-    const supabase = getSupabase();
-
-    const { error } = await supabase
-      .from('artists')
-      .update({ metadata: metadata ? JSON.stringify(metadata) : null })
-      .eq('id', id);
-
-    if (error) {
-      throw new Error(`Failed to update artist metadata: ${error.message}`);
-    }
+    query.run(`UPDATE artists SET metadata = ? WHERE id = ?`, [
+      metadata ? JSON.stringify(metadata) : null,
+      id,
+    ]);
   },
 
   /**
    * Delete artist
    */
   async delete(id: number): Promise<void> {
-    const supabase = getSupabase();
-
-    const { error } = await supabase
-      .from('artists')
-      .delete()
-      .eq('id', id);
-
-    if (error) {
-      throw new Error(`Failed to delete artist: ${error.message}`);
-    }
+    query.run(`DELETE FROM artists WHERE id = ?`, [id]);
   },
 
   /**
    * Get all artists
    */
   async findAll(): Promise<Artist[]> {
-    const supabase = getSupabase();
-
-    const { data, error } = await supabase
-      .from('artists')
-      .select('*')
-      .order('discovered_at', { ascending: false });
-
-    if (error) {
-      throw new Error(`Failed to find all artists: ${error.message}`);
-    }
-
-    return data as Artist[];
+    return query.all<Artist>(`SELECT * FROM artists ORDER BY discovered_at DESC`);
   },
 
   /**
    * Count artists by status
    */
   async countByStatus(status: ArtistStatus): Promise<number> {
-    const supabase = getSupabase();
-
-    const { count, error } = await supabase
-      .from('artists')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', status);
-
-    if (error) {
-      throw new Error(`Failed to count artists: ${error.message}`);
-    }
-
-    return count ?? 0;
+    const row = query.get<{ count: number }>(
+      `SELECT COUNT(*) as count FROM artists WHERE status = ?`,
+      [status]
+    );
+    return row?.count ?? 0;
   },
 };

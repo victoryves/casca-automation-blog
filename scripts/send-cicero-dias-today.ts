@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 import { loadConfig } from '../src/config/index.js';
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { artistOps, sourceOps } from '../src/db/operations/index.js';
 import { SynthesisModule } from '../src/modules/synthesis/index.js';
 import { EmailModule } from '../src/modules/email/index.js';

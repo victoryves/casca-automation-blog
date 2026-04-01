@@ -7,7 +7,7 @@
  * Make sure HASHNODE_API_KEY and HASHNODE_PUBLICATION_ID are set in .env
  */
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { loadConfig } from '../src/config/index.js';
 import { PublishingModule } from '../src/modules/publishing/index.js';
 import { draftOps } from '../src/db/operations/index.js';
@@ -24,9 +24,7 @@ if (!config.env.hashnodeApiKey || !config.env.hashnodePublicationId) {
   process.exit(1);
 }
 
-initDatabase({
-  path: config.env.databasePath,
-});
+initDatabase();
 
 async function testPublish() {
   console.log('🧪 Testing Hashnode publication...\n');

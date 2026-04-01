@@ -11,7 +11,6 @@
     "daily": "tsx scripts/run-daily.ts",
     "publish": "tsx scripts/publish-draft.ts",
     "clean": "tsx scripts/clean-bad-artists.ts",
-    "init-db": "tsx scripts/init-db.ts",
     "test-config": "tsx scripts/test-config.ts",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -28,14 +27,13 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
-    "@supabase/supabase-js": "^2.39.3",
     "axios": "^1.7.9",
+    "better-sqlite3": "^11.8.1",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.7",
     "html-to-text": "^9.0.5",
     "marked": "^15.0.4",
     "openai": "^6.31.0",
-    "pg": "^8.19.0",
     "resend": "^4.0.1",
     "zod": "^3.24.1"
   },

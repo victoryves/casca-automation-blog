@@ -18,6 +18,7 @@ import {
 
 // Load environment variables
 dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true });
 
 // ============================================================================
 // Environment Variables
@@ -25,8 +26,7 @@ dotenv.config();
 
 export interface EnvConfig {
   // Database
-  supabaseUrl: string;
-  supabaseKey: string;
+  dbPath: string;
 
   // APIs
   geminiApiKey: string;
@@ -59,8 +59,6 @@ export interface EnvConfig {
 
 function loadEnvConfig(): EnvConfig {
   const required = [
-    'SUPABASE_URL',
-    'SUPABASE_KEY',
     'GEMINI_API_KEY',
     'RESEND_API_KEY',
     'TAVILY_API_KEY',
@@ -76,8 +74,7 @@ function loadEnvConfig(): EnvConfig {
   }
 
   return {
-    supabaseUrl: process.env.SUPABASE_URL!,
-    supabaseKey: process.env.SUPABASE_KEY!,
+    dbPath: process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'casca.sqlite'),
     geminiApiKey: process.env.GEMINI_API_KEY!,
     resendApiKey: process.env.RESEND_API_KEY!,
     tavilyApiKey: process.env.TAVILY_API_KEY!,

@@ -18,8 +18,8 @@ function testConfig(): void {
 
     // Test environment variables
     console.log('📋 Environment Variables:');
-    console.log(`  Database Path: ${config.env.databasePath}`);
-    console.log(`  Anthropic API Key: ${config.env.anthropicApiKey.substring(0, 10)}...`);
+    console.log(`  Database Path: ${config.env.dbPath}`);
+    console.log(`  Gemini API Key: ${config.env.geminiApiKey.substring(0, 10)}...`);
     console.log(`  Resend API Key: ${config.env.resendApiKey.substring(0, 10)}...`);
     console.log(`  Tavily API Key: ${config.env.tavilyApiKey.substring(0, 10)}...`);
     console.log(`  Approval Email: ${config.env.approvalEmail}`);

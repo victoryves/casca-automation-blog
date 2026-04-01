@@ -4,23 +4,21 @@
  * Test Email with Images
  */
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { loadConfig } from '../src/config/index.js';
 import { EmailModule } from '../src/modules/email/index.js';
 import { VisualModule } from '../src/modules/visual/index.js';
 
 const config = loadConfig();
 
-initDatabase({
-  path: config.env.databasePath,
-});
+initDatabase();
 
 async function testEmail() {
   console.log('🧪 Testing email with images...\n');
 
   try {
     // Source images
-    const visualModule = new VisualModule(config.env.anthropicApiKey);
+    const visualModule = new VisualModule(config.env.geminiApiKey);
     console.log('📸 Sourcing images...');
     const images = await visualModule.sourceImages(
       { full_name: 'Cícero Dias', visual_practice: 'pintura' },

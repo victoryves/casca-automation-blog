@@ -7,14 +7,13 @@
  * and resets daily email counter to allow new workflow execution.
  */
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
-import { getSupabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
+import { query } from '../src/db/client.js';
 
 async function cleanBadArtists() {
   console.log('🧹 Cleaning bad artists from database...\n');
 
   initDatabase();
-  const supabase = getSupabase();
 
   try {
     // Patterns that indicate non-person entities
@@ -38,15 +37,10 @@ async function cleanBadArtists() {
     let totalDeleted = 0;
 
     for (const pattern of badPatterns) {
-      const { data: artists, error: fetchError } = await supabase
-        .from('artists')
-        .select('id, full_name')
-        .ilike('full_name', `%${pattern}%`);
-
-      if (fetchError) {
-        console.error(`  ✗ Error fetching ${pattern}:`, fetchError.message);
-        continue;
-      }
+      const artists = query.all<{ id: number; full_name: string }>(
+        `SELECT id, full_name FROM artists WHERE LOWER(full_name) LIKE ?`,
+        [`%${pattern.toLowerCase()}%`]
+      );
 
       if (artists && artists.length > 0) {
         console.log(`  Found ${artists.length} artist(s) matching "${pattern}":`);
@@ -54,24 +48,13 @@ async function cleanBadArtists() {
 
         // Delete sources first (foreign key constraint)
         for (const artist of artists) {
-          await supabase
-            .from('sources')
-            .delete()
-            .eq('artist_id', artist.id);
+          query.run(`DELETE FROM sources WHERE artist_id = ?`, [artist.id]);
         }
 
         // Delete artists
-        const { error: deleteError } = await supabase
-          .from('artists')
-          .delete()
-          .ilike('full_name', `%${pattern}%`);
-
-        if (deleteError) {
-          console.error(`  ✗ Error deleting ${pattern}:`, deleteError.message);
-        } else {
-          console.log(`  ✓ Deleted ${artists.length} bad artist(s)\n`);
-          totalDeleted += artists.length;
-        }
+        query.run(`DELETE FROM artists WHERE LOWER(full_name) LIKE ?`, [`%${pattern.toLowerCase()}%`]);
+        console.log(`  ✓ Deleted ${artists.length} bad artist(s)\n`);
+        totalDeleted += artists.length;
       }
     }
 
@@ -81,29 +64,21 @@ async function cleanBadArtists() {
     console.log('\n🔄 Resetting daily email counter...');
     const today = new Date().toISOString().split('T')[0];
 
-    const { data: todayDrafts, error: draftFetchError } = await supabase
-      .from('drafts')
-      .select('id, title')
-      .gte('created_at', `${today}T00:00:00`)
-      .lte('created_at', `${today}T23:59:59`);
+    const todayDrafts = query.all<{ id: number; title: string }>(
+      `SELECT id, title FROM drafts WHERE created_at >= ? AND created_at <= ?`,
+      [`${today}T00:00:00`, `${today}T23:59:59`]
+    );
 
-    if (draftFetchError) {
-      console.error('  ✗ Error fetching drafts:', draftFetchError.message);
-    } else if (todayDrafts && todayDrafts.length > 0) {
+    if (todayDrafts.length > 0) {
       console.log(`  Found ${todayDrafts.length} draft(s) from today:`);
       todayDrafts.forEach(d => console.log(`    - ${d.title}`));
 
-      const { error: deleteDraftsError } = await supabase
-        .from('drafts')
-        .delete()
-        .gte('created_at', `${today}T00:00:00`)
-        .lte('created_at', `${today}T23:59:59`);
+      query.run(
+        `DELETE FROM drafts WHERE created_at >= ? AND created_at <= ?`,
+        [`${today}T00:00:00`, `${today}T23:59:59`]
+      );
 
-      if (deleteDraftsError) {
-        console.error('  ✗ Error deleting drafts:', deleteDraftsError.message);
-      } else {
-        console.log(`  ✓ Deleted ${todayDrafts.length} draft(s) from today`);
-      }
+      console.log(`  ✓ Deleted ${todayDrafts.length} draft(s) from today`);
     } else {
       console.log('  No drafts from today to delete');
     }

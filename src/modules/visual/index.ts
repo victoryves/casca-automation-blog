@@ -169,7 +169,8 @@ export class VisualModule {
               resolvedCandidate.url,
               `${resolvedCandidate.url} ${resolvedCandidate.context} ${source.url} ${source.institution} ${source.content_summary ?? ''}`,
               true,
-              true
+              true,
+              artist
             );
             if (!prevalidated.ok) {
               console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${prevalidated.reason}`);
@@ -281,7 +282,8 @@ export class VisualModule {
               normalizedUrl,
               `${normalizedUrl} ${img.alt} ${source.url} ${source.institution} ${source.content_summary ?? ''}`,
               true,
-              true
+              true,
+              artist
             );
             if (!prevalidated.ok) {
               console.log(`  ✗ Rejected from ${source.institution}: ${prevalidated.reason}`);
@@ -437,7 +439,8 @@ export class VisualModule {
         normalizedUrl,
         `${normalizedUrl} ${img.caption ?? ''} ${img.source_page ?? ''}`,
         true,
-        this.webCandidateTargetsArtist(img, artist)
+        this.webCandidateTargetsArtist(img, artist),
+        artist
       );
       if (!prevalidated.ok) {
         console.log(`  ✗ Web image rejected: ${prevalidated.reason}`);
@@ -540,6 +543,7 @@ export class VisualModule {
     if (this.webCandidateTargetsArtist(candidate, artist)) score += 4;
     if (this.containsArtworkSignals(normalized)) score += 3;
     if (this.isPhotographyPractice(artist)) score += 1;
+    if (!this.isPhotographyPractice(artist) && this.looksLikeNonArtworkPhotoScene(normalized)) score -= 8;
     if (this.containsNonArtworkSignals(normalized, this.isPhotographyPractice(artist))) score -= 6;
 
     return score;
@@ -579,6 +583,10 @@ export class VisualModule {
     }
 
     if (this.containsNonArtworkSignals(normalized, this.isPhotographyPractice(artist))) {
+      return false;
+    }
+
+    if (!this.isPhotographyPractice(artist) && this.looksLikeNonArtworkPhotoScene(normalized)) {
       return false;
     }
 
@@ -664,7 +672,8 @@ export class VisualModule {
     url: string,
     contextText = '',
     requireArtworkSignal = false,
-    allowSourceContextFallback = false
+    allowSourceContextFallback = false,
+    artist?: ArtistInfo
   ): Promise<{ ok: boolean; reason: string }> {
     if (this.isStrongArtworkAssetUrl(url)) {
       const imageData = await this.downloadImageAsBase64(url);
@@ -688,6 +697,10 @@ export class VisualModule {
 
     if (this.containsNonArtworkSignals(normalizedContext, false)) {
       return { ok: false, reason: 'Context suggests portrait, author photo, or book cover instead of artwork' };
+    }
+
+    if (artist && !this.isPhotographyPractice(artist) && this.looksLikeNonArtworkPhotoScene(normalizedContext)) {
+      return { ok: false, reason: 'Context suggests a landscape or documentary photograph, not the artist artwork' };
     }
 
     if (requireArtworkSignal && !this.containsArtworkSignals(normalizedContext)) {
@@ -861,6 +874,86 @@ export class VisualModule {
     ];
 
     return artworkSignals.some((signal) => text.includes(signal));
+  }
+
+  private looksLikeNonArtworkPhotoScene(text: string): boolean {
+    const photoSceneSignals = [
+      'landscape',
+      'paisagem',
+      'beach',
+      'praia',
+      'ocean',
+      'sea',
+      'shore',
+      'waves',
+      'wave',
+      'island',
+      'ilha',
+      'coast',
+      'coastal',
+      'rock formation',
+      'mountain',
+      'sky',
+      'clouds',
+      'sunset',
+      'sunrise',
+      'travel',
+      'tourism',
+      'turismo',
+      'nature',
+      'natural',
+      'national park',
+      'parque',
+      'destination',
+      'fernando de noronha',
+      'cacimba do padre',
+      'laurini',
+    ];
+
+    const photographicMediumSignals = [
+      'photo',
+      'photography',
+      'fotografia',
+      'jpg',
+      'jpeg',
+      'png',
+      'webp',
+      'camera',
+      'shutter',
+      'exposure',
+    ];
+
+    const artworkMediumSignals = [
+      'painting',
+      'pintura',
+      'canvas',
+      'tela',
+      'woodcut',
+      'xilogravura',
+      'gravura',
+      'drawing',
+      'desenho',
+      'mural',
+      'wall painting',
+      'acrylic',
+      'oil on canvas',
+      'watercolor',
+      'guache',
+      'gouache',
+      'print',
+      'obra',
+      'artwork',
+    ];
+
+    const hasPhotoSceneSignal = photoSceneSignals.some((signal) => text.includes(signal));
+    if (!hasPhotoSceneSignal) {
+      return false;
+    }
+
+    const hasPhotographicMediumSignal = photographicMediumSignals.some((signal) => text.includes(signal));
+    const hasArtworkMediumSignal = artworkMediumSignals.some((signal) => text.includes(signal));
+
+    return hasPhotographicMediumSignal || !hasArtworkMediumSignal;
   }
 
   private isMeaningfulArtworkLabel(label: string, context = '', objectHref = ''): boolean {

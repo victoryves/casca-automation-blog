@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { WorkflowOrchestrator } from '../../src/orchestrator/workflow.js';
 import { draftOps } from '../../src/db/operations/index.js';
-import { initDatabase, closeDatabase } from '../../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../../src/db/local.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
   const draftId = Number(req.query.draft);

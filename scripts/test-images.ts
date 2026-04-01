@@ -8,7 +8,7 @@ import { VisualModule } from '../src/modules/visual/index.js';
 import { getConfig } from '../src/config/index.js';
 
 const config = getConfig();
-const visualModule = new VisualModule(config.env.anthropicApiKey);
+const visualModule = new VisualModule(config.env.geminiApiKey);
 
 async function testImages() {
   console.log('🖼️  Testing image sourcing for Cícero Dias...\n');

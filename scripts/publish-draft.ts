@@ -6,7 +6,7 @@
  * Publishes the most recent sent draft to Hashnode
  */
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { loadConfig } from '../src/config/index.js';
 import { draftOps } from '../src/db/operations/index.js';
 import { PublishingModule } from '../src/modules/publishing/index.js';

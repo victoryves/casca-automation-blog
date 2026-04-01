@@ -1,15 +1,13 @@
 #!/usr/bin/env tsx
 
 import { marked } from 'marked';
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { draftOps } from '../src/db/operations/index.js';
 import { loadConfig } from '../src/config/index.js';
 
 const config = loadConfig();
 
-initDatabase({
-  path: config.env.databasePath,
-});
+initDatabase();
 
 const draft = draftOps.findById(16);
 

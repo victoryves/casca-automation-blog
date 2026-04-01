@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 
-import { initDatabase, closeDatabase } from '../src/db/supabase.js';
+import { initDatabase, closeDatabase } from '../src/db/local.js';
 import { draftOps, artistOps, sourceOps } from '../src/db/operations/index.js';
 import { loadConfig } from '../src/config/index.js';
 import { marked } from 'marked';
@@ -8,9 +8,7 @@ import fs from 'fs';
 
 const config = loadConfig();
 
-initDatabase({
-  path: config.env.databasePath,
-});
+initDatabase();
 
 const draft = draftOps.findById(16);
 
