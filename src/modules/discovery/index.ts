@@ -12,6 +12,7 @@ import { DuckDuckGoClient } from './duckduckgo-client.js';
 import { CandidateExtractor } from './candidate-extractor.js';
 import { SEED_ARTISTS, type SeedArtist } from './seed-artists.js';
 import { artistOps, draftOps, sourceOps } from '../../db/operations/index.js';
+import { PublicationHistoryModule } from '../publication-history/index.js';
 import {
   getConfig,
   getInstitutionCredibility,
@@ -25,6 +26,7 @@ export class DiscoveryModule {
   private duckDuckGoClient: DuckDuckGoClient;
   private extractor: CandidateExtractor;
   private tavilyUnavailable = false;
+  private publicationHistory: PublicationHistoryModule | null = null;
   private readonly STATE_MAP: Record<string, string> = {
     PE: 'Pernambuco',
     PB: 'Paraíba',
@@ -175,6 +177,42 @@ export class DiscoveryModule {
     };
   }
 
+  private async filterSeedsByPublishedHistory(seeds: SeedArtist[]): Promise<SeedArtist[]> {
+    if (seeds.length === 0) {
+      return seeds;
+    }
+
+    const config = getConfig();
+    const publicationHistory = this.ensurePublicationHistory(config);
+    const haystacks = await publicationHistory.getPublishedPostHaystacks();
+    if (haystacks.length === 0) {
+      return seeds;
+    }
+
+    return seeds.filter((seed) => !this.isArtistPublishedInExternalBlog(seed.name, haystacks));
+  }
+
+  private ensurePublicationHistory(config: Config): PublicationHistoryModule {
+    if (!this.publicationHistory) {
+      this.publicationHistory = new PublicationHistoryModule({
+        rssUrl: config.env.rssUrl,
+        hashnodeApiKey: config.env.hashnodeApiKey,
+        hashnodePublicationId: config.env.hashnodePublicationId,
+      });
+    }
+
+    return this.publicationHistory;
+  }
+
+  private isArtistPublishedInExternalBlog(artistName: string, publishedHaystacks: string[]): boolean {
+    const normalized = this.normalizeName(artistName);
+    if (!normalized) {
+      return false;
+    }
+
+    return publishedHaystacks.some((haystack) => haystack.includes(normalized));
+  }
+
   private async discoverFromSeedList(params: {
     config: Config;
     maxCandidates?: number;
@@ -185,8 +223,10 @@ export class DiscoveryModule {
   }): Promise<void> {
     const { config, maxCandidates, candidates, sourcesMap, errors, existingNames } = params;
 
-    const remainingSeeds = this.balanceSeedsAcrossCategories(SEED_ARTISTS).filter(
-      (seed) => !existingNames.has(this.normalizeName(seed.name))
+    const remainingSeeds = await this.filterSeedsByPublishedHistory(
+      this.balanceSeedsAcrossCategories(SEED_ARTISTS).filter(
+        (seed) => !existingNames.has(this.normalizeName(seed.name))
+      )
     );
 
     if (remainingSeeds.length === 0) {

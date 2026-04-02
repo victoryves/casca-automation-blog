@@ -89,7 +89,11 @@ export class WorkflowOrchestrator {
       const emergencyFallback = new EmergencyFallbackModule();
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
-      const sendWindowOpen = this.isNormalSendWindowOpen(config.env.appTimezone);
+      let sendWindowOpen = this.isNormalSendWindowOpen(config.env.appTimezone);
+      if (options.forceRun) {
+        this.logger.info('Force run enabled - allowing immediate send window');
+        sendWindowOpen = true;
+      }
       const blockedArtistNames = new Set<string>([
         ...(await this.getPreviouslySentArtistNames()),
         ...(await this.getOpenDraftArtistNames()),
