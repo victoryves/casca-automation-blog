@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.casca.webhook-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-webhooks-wrapper.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/victoryves/casca-automation-blog-runner</string>
+
+    <!-- Run on load and keep alive -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/webhooks-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/webhooks-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/victoryves</string>
+    </dict>
+</dict>
+</plist>
