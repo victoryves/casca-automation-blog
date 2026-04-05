@@ -39,12 +39,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return res.status(404).send(page('Not Found', `Draft ${draftId} not found.`));
     }
 
-    if (draft.status === 'rejected') {
-      closeDatabase();
-      return res.status(200).send(page('Already Rejected', `This draft was already rejected. A new article is being prepared.`));
-    }
+    const alreadyRejected = draft.status === 'rejected';
 
-    if (draft.status !== 'sent' && draft.status !== 'approved') {
+    if (!alreadyRejected && draft.status !== 'sent' && draft.status !== 'approved') {
       closeDatabase();
       return res
         .status(400)
@@ -58,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     return res.status(200).send(
       page(
-        result.alreadyRejected ? 'Already Rejected' : 'Rejected',
+        result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
         'This article was rejected successfully. A replacement request has been queued, and the background runner will automatically prepare and send a new article by email.'
       )
     );
