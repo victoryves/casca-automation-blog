@@ -207,26 +207,14 @@ export class VisualModule {
             }
 
             const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
-            const allowTrustedFallback = this.shouldAcceptTrustedSourceWithoutVision(
-              source,
-              resolvedCandidate.objectHref || source.url,
-              `${resolvedCandidate.objectTitle} ${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.context}`,
-              artist,
-              quality.reason
-            );
-
-            if ((quality.verified && !this.isNegativeVerificationReason(quality.reason)) || allowTrustedFallback) {
+            if (quality.verified && !this.isNegativeVerificationReason(quality.reason)) {
               images.push({
                 url: resolvedCandidate.url,
                 caption: chosenLabel || `Artwork by ${artist.full_name}`,
                 attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
               });
               selectedArtworkKeys.add(artworkKey);
-              console.log(
-                `  ✓ Added direct-source image from ${source.institution}: ${
-                  allowTrustedFallback ? 'Trusted-source fallback without Gemini vision' : quality.reason
-                }`
-              );
+              console.log(`  ✓ Added direct-source image from ${source.institution}: ${quality.reason}`);
               break;
             } else {
               console.log(`  ✗ Rejected direct-source image from ${source.institution}: ${quality.reason}`);
@@ -321,15 +309,7 @@ export class VisualModule {
             }
 
             const quality = await this.verifyImageWithClaude(normalizedUrl, artist);
-            const allowTrustedFallback = this.shouldAcceptTrustedSourceWithoutVision(
-              source,
-              img.source_page || source.url,
-              `${img.alt} ${img.source_page ?? ''}`,
-              artist,
-              quality.reason
-            );
-
-            if (quality.verified || allowTrustedFallback) {
+            if (quality.verified) {
               images.push({
                 url: normalizedUrl,
                 caption: img.alt || `Artwork by ${artist.full_name}`,
@@ -337,9 +317,7 @@ export class VisualModule {
               });
               selectedArtworkKeys.add(artworkKey);
               console.log(
-                `  ✓ Added verified image from ${source.institution}: ${
-                  allowTrustedFallback ? 'Trusted-source fallback without Gemini vision' : quality.reason
-                }`
+                `  ✓ Added verified image from ${source.institution}: ${quality.reason}`
               );
             } else {
               console.log(`  ✗ Rejected from ${source.institution}: ${quality.reason}`);
@@ -868,6 +846,7 @@ export class VisualModule {
     ];
 
     if (!allowPortraitArtwork) {
+      blockedSignals.push('photo', 'photograph', 'photography', 'fotografia', 'foto');
       blockedSignals.push('portrait', 'retrato');
     }
 
