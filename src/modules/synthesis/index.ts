@@ -19,6 +19,7 @@ export interface ArticleStructure {
 
 export class SynthesisModule {
   private client: GeminiClient;
+  private readonly minWordCount = 650;
 
   constructor(apiKey: string) {
     this.client = new GeminiClient(apiKey);
@@ -124,7 +125,32 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       });
 
       // Parse response
-      return this.parseArticleResponse(content, artist);
+      let article = this.parseArticleResponse(content, artist);
+
+      if (this.isBelowMinLength(article)) {
+        console.warn(
+          `  ⚠ Gemini response too short (${this.wordCount(article.content)} words). Retrying with length guard.`
+        );
+
+        const expanded = await this.client.generateText({
+          model: 'gemini-2.5-flash',
+          systemInstruction: `${prompt.system}\n\nIMPORTANT: Your response MUST be between 800 and 1200 words. If you are unsure, err on the longer side while staying factual.`,
+          userPrompt: `${userPrompt}\n\nYour previous response was too short. Rewrite the full article in the required format and length (800-1200 words).`,
+          maxOutputTokens: 4096,
+          temperature: 0.7,
+        });
+
+        article = this.parseArticleResponse(expanded, artist);
+      }
+
+      if (this.isBelowMinLength(article)) {
+        console.warn(
+          `  ⚠ Gemini still returned a short article (${this.wordCount(article.content)} words). Expanding with source excerpts.`
+        );
+        article = this.expandWithSources(article, artist, sources);
+      }
+
+      return article;
     } catch (error) {
       console.error('Gemini API error:', error);
       console.warn('Falling back to deterministic article generation');
@@ -191,6 +217,54 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       subtitle,
       content: contentLines.join('\n').trim(),
       keywords,
+    };
+  }
+
+  private wordCount(value: string): number {
+    return value.split(/\s+/).filter(Boolean).length;
+  }
+
+  private isBelowMinLength(article: ArticleStructure): boolean {
+    return this.wordCount(article.content) < this.minWordCount;
+  }
+
+  private expandWithSources(
+    article: ArticleStructure,
+    artist: Artist,
+    sources: Source[]
+  ): ArticleStructure {
+    const excerpts = sources
+      .map((source) => {
+        const excerpt = this.extractRelevantSourceExcerpt(source, artist);
+        if (!excerpt) return null;
+        return {
+          institution: source.institution || 'Source',
+          excerpt,
+        };
+      })
+      .filter((item): item is { institution: string; excerpt: string } => Boolean(item));
+
+    if (excerpts.length === 0) {
+      return article;
+    }
+
+    const additionalParagraphs = excerpts.map((item) => {
+      return `From ${item.institution}, the record highlights: ${item.excerpt.trim()}`;
+    });
+
+    const expandedContent = [
+      article.content.trim(),
+      '',
+      ...additionalParagraphs,
+      '',
+      `Taken together, these sources reinforce ${artist.full_name}'s role within the broader visual conversation of Northeast Brazil, grounding the narrative in verifiable material.`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    return {
+      ...article,
+      content: expandedContent.trim(),
     };
   }
 
