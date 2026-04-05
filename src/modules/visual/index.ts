@@ -1757,32 +1757,21 @@ export class VisualModule {
         : '';
       const photographyMode = this.isPhotographyPractice(artist);
       const criteriaText = photographyMode
-        ? `Verify ALL of these criteria (reject if ANY fails):
-1. PHOTOGRAPHIC ARTWORK: This must plausibly be a photographic artwork by "${artist.full_name}", not a photo of the artist, a book cover, poster, UI element, logo, screenshot, or promo asset.
-2. ACCEPT documentary or artistic photographs, including people, places, rituals, or scenes, if they plausibly look like the artist's work.
-3. REJECT selfies, headshots, artist portraits, interviews, event photos, installation shots with lots of room around them, framed works on walls, mockups, catalog pages, or screenshots.
-4. ATTRIBUTION: The image should plausibly match the artist's style or authorship. If you can't confirm, reject.
-5. COMPLETE AND CLEAR: The image should be one artwork, not a collage or thumbnail, and it must be sharp enough to read as a finished work.`
-        : `Verify ALL of these criteria (reject if ANY fails):
-1. ARTWORK: This must be an artwork (painting, print, woodcut print, etc.), not a photo of a person, UI element, logo, or banner.
-2. PAPER PRINT ONLY — NOT A PHYSICAL OBJECT: Look carefully at the image. Ask yourself: "Am I looking at ink on paper, or a photo of a 3D object?"
-   - ACCEPT: A print on paper (ink transferred from a woodblock to paper). The background should be the paper itself (white, cream, off-white). The image looks flat, like a scan or a straight-on photo of paper.
-   - REJECT if ANY of these are true:
-     * The image shows a carved wooden block or matrix (you can see wood grain, the carving is recessed into wood, the medium is WOOD not paper)
-     * There is a gray, colored, or gradient background BEHIND the artwork (this means it's a photo of a physical object, not a scan of a print)
-     * There are visible shadows cast by the artwork (means it's a 3D object being photographed)
-     * The artwork appears to float or have depth/perspective (mockup or framed piece)
-     * You can see a frame, wall, gallery, or room around the artwork
-     * The edges of the artwork look like a thick physical object rather than a flat sheet of paper
-   For woodcut/xilogravura artists: we want the PRINTED RESULT on paper, NOT the carved wooden block.
-3. ATTRIBUTION: The artwork style must plausibly match the artist. If you can't confirm, reject.
-4. FILLS THE FRAME — NO WIDE BORDERS: The artwork must fill at least 90% of the image area. REJECT if ANY of these are true:
-     * The artwork is centered on a sheet of paper with obvious wide white/blank margins around it (more than ~5% of the image on any side)
-     * There is handwriting, a signature, numbering (like "2/10"), or text below/above the artwork
-     * The artwork is small and "floating" within a much larger blank image
-   A thin sliver of paper edge or minimal texture at the border is OK — what matters is that the artwork dominates the image. Close-up crops that fill the frame are ideal.
-5. COMPLETE: The artwork should show ONE piece, not a collage of multiple works or a tiny thumbnail.
-6. HIGH RESOLUTION AND SHARP: The image must be crisp with clearly visible fine details and textures. REJECT if the image looks soft, fuzzy, compressed, low-resolution, or if you cannot make out fine lines and details clearly.`;
+        ? `Return JSON ONLY with keys:
+{ "isArtwork": boolean, "isArtistPhoto": boolean, "hasPeople": boolean, "isInstallationView": boolean, "isDecorativeObject": boolean, "isDocumentaryPhoto": boolean, "isArtworkOnly": boolean, "confidence": number, "reason": string }
+Rules:
+1) PHOTOGRAPHIC ARTWORK: It must plausibly be a photographic artwork by "${artist.full_name}". Reject artist portraits, selfies, interviews, event photos, or installation views.
+2) People are allowed ONLY if they appear as part of an intentional photographic artwork, not an artist portrait or event snapshot.
+3) Must be one finished artwork, sharp and clear.
+4) If unsure, set isArtwork=false and confidence<=0.5.`
+        : `Return JSON ONLY with keys:
+{ "isArtwork": boolean, "isArtistPhoto": boolean, "hasPeople": boolean, "isInstallationView": boolean, "isDecorativeObject": boolean, "isDocumentaryPhoto": boolean, "isArtworkOnly": boolean, "confidence": number, "reason": string }
+Rules:
+1) ARTWORK ONLY: Must be the artwork itself (painting/print/drawing/sculpture) — NOT a photo of the artist, NOT an exhibition/install view, NOT a framed piece on a wall, NOT a catalog page, NOT a mockup.
+2) Reject if there are people, gallery spaces, display pedestals, or wide room context.
+3) If it's a physical object, accept ONLY if it is clearly the artwork itself isolated on a neutral background (no people, no gallery context).
+4) Must be one finished artwork, sharp and clear.
+5) If unsure, set isArtwork=false and confidence<=0.5.`;
 
       const text = await this.gemini.generateTextFromImage({
         model: 'gemini-2.5-flash',
@@ -1790,42 +1779,52 @@ export class VisualModule {
         temperature: 0,
         imageBase64: imageData.base64,
         mimeType: imageData.mediaType,
+        responseMimeType: 'application/json',
         prompt: `Evaluate this image for use in an article about the artist "${artist.full_name}".${practiceInfo}${locationInfo}
-
-Reply with exactly one line in this format:
-VERIFIED|brief explanation
-or
-REJECTED|brief explanation
 
 ${criteriaText}
 
-When in doubt on any criterion, say false.`,
+Return JSON only, no extra text.`,
       });
 
-      const normalized = text.trim().replace(/\s+/g, ' ');
-      const verifiedMatch = normalized.match(/^VERIFIED\|(.*)$/i);
-      if (verifiedMatch) {
+      const parsed = this.safeParseVerificationJson(text);
+      if (!parsed) {
+        const normalized = text.trim().replace(/\s+/g, ' ');
         const result = {
-          verified: true,
-          reason: verifiedMatch[1]?.trim() || 'Verified by Gemini vision',
+          verified: false,
+          reason: `Could not parse verification response: ${normalized.slice(0, 120)}`,
         };
         this.setVerificationCache(cacheKey, result);
         return result;
       }
 
-      const rejectedMatch = normalized.match(/^REJECTED\|(.*)$/i);
-      if (rejectedMatch) {
-        const result = {
-          verified: false,
-          reason: rejectedMatch[1]?.trim() || 'Rejected by Gemini vision',
-        };
-        this.setVerificationCache(cacheKey, result);
-        return result;
+      const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+      const isArtwork = Boolean(parsed.isArtwork);
+      const hasPeople = Boolean(parsed.hasPeople);
+      const isArtistPhoto = Boolean(parsed.isArtistPhoto);
+      const isInstallationView = Boolean(parsed.isInstallationView);
+      const isDecorativeObject = Boolean(parsed.isDecorativeObject);
+      const isDocumentaryPhoto = Boolean(parsed.isDocumentaryPhoto);
+      const isArtworkOnly = Boolean(parsed.isArtworkOnly);
+
+      let allow = isArtwork && confidence >= 0.6;
+
+      if (photographyMode) {
+        if (isArtistPhoto || isInstallationView || isDecorativeObject) {
+          allow = false;
+        }
+      } else {
+        if (hasPeople || isArtistPhoto || isInstallationView || isDocumentaryPhoto) {
+          allow = false;
+        }
+        if (isDecorativeObject && !isArtworkOnly) {
+          allow = false;
+        }
       }
 
       const result = {
-        verified: false,
-        reason: `Could not parse verification response: ${normalized.slice(0, 120)}`,
+        verified: allow,
+        reason: parsed.reason || 'Gemini vision verification',
       };
       this.setVerificationCache(cacheKey, result);
       return result;
@@ -1835,6 +1834,30 @@ When in doubt on any criterion, say false.`,
       const result = { verified: false, reason: 'Verification error — rejected for safety' };
       this.setVerificationCache(cacheKey, result);
       return result;
+    }
+  }
+
+  private safeParseVerificationJson(
+    value: string
+  ): null | {
+    isArtwork?: boolean;
+    isArtistPhoto?: boolean;
+    hasPeople?: boolean;
+    isInstallationView?: boolean;
+    isDecorativeObject?: boolean;
+    isDocumentaryPhoto?: boolean;
+    isArtworkOnly?: boolean;
+    confidence?: number;
+    reason?: string;
+  } {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
     }
   }
 
