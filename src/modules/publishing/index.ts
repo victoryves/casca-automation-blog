@@ -93,9 +93,11 @@ export class PublishingModule {
         }
       `;
 
+      const publishTitle = this.ensureArtistNameInTitle(draft.title, artist.full_name);
+
       const variables = {
         input: {
-          title: draft.title,
+          title: publishTitle,
           subtitle: draft.subtitle || undefined,
           contentMarkdown: content, // Hashnode supports markdown
           tags: [
@@ -282,5 +284,28 @@ export class PublishingModule {
     }
 
     return this.buildProxyUrl(url, 1200);
+  }
+
+  private ensureArtistNameInTitle(title: string, artistName: string): string {
+    const normalizedTitle = this.normalizeText(title);
+    const normalizedName = this.normalizeText(artistName);
+
+    if (normalizedTitle.includes(normalizedName)) {
+      return title;
+    }
+
+    const surname = normalizedName.split(/\s+/).filter(Boolean).pop();
+    if (surname && surname.length >= 3 && normalizedTitle.includes(surname)) {
+      return title;
+    }
+
+    return `${artistName}: ${title}`;
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
   }
 }
