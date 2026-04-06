@@ -39,6 +39,7 @@ interface VerificationCacheEntry {
 export class VisualModule {
   private readonly imagesDir: string;
   private readonly verificationCachePath: string;
+  private readonly verificationSchemaVersion = 'v2.2';
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
   private readonly gemini: GeminiClient;
@@ -2045,7 +2046,7 @@ Return JSON only, no extra text.`,
   }
 
   private buildVerificationCacheKey(url: string, artist: ArtistInfo): string {
-    return `${this.normalizeText(url)}::${this.normalizeArtistPractice(artist)}`;
+    return `${this.verificationSchemaVersion}::${this.normalizeText(url)}::${this.normalizeArtistPractice(artist)}`;
   }
 
   private setVerificationCache(
