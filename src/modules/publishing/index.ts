@@ -219,12 +219,19 @@ export class PublishingModule {
 
           if (imageIndex < positions.length && i === positions[imageIndex]) {
             const img = images[imageIndex];
-            // Use image proxy to avoid hotlinking issues
-            const proxyUrl = this.buildProxyUrl(img.url, 800);
-            result.push(`![${img.caption}](${proxyUrl})`);
+            const contentUrl = this.buildContentImageUrl(img.url, 1200);
+            result.push(`![${img.caption}](${contentUrl})`);
             result.push(`*${img.attribution}*`);
             imageIndex++;
           }
+        }
+
+        while (imageIndex < images.length) {
+          const img = images[imageIndex];
+          const contentUrl = this.buildContentImageUrl(img.url, 1200);
+          result.push(`![${img.caption}](${contentUrl})`);
+          result.push(`*${img.attribution}*`);
+          imageIndex++;
         }
 
         content = result.join('\n\n');
@@ -276,6 +283,13 @@ export class PublishingModule {
 
   private buildProxyUrl(url: string, width = 800): string {
     return `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=${width}&output=webp`;
+  }
+
+  private buildContentImageUrl(url: string, width = 800): string {
+    if (url.startsWith('https://')) {
+      return url;
+    }
+    return this.buildProxyUrl(url, width);
   }
 
   private buildCoverImageUrl(url: string): string {
