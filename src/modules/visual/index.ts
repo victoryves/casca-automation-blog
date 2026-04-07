@@ -1743,6 +1743,7 @@ Rules:
 1) PHOTOGRAPHIC ARTWORK: It must plausibly be a photographic artwork by "${artist.full_name}". Reject artist portraits, selfies, interviews, event photos, or installation views.
 2) People are allowed ONLY if they appear as part of an intentional photographic artwork, not an artist portrait or event snapshot.
 3) Must be one finished artwork, sharp and clear.
+4) REJECT any image that contains large blocks of text, flyers, posters, captions, or promotional typography.
 4) If unsure, set isArtwork=false and confidence<=0.5.`
         : `Return JSON ONLY with keys:
 { "isArtwork": boolean, "isArtistPhoto": boolean, "hasPeople": boolean, "isInstallationView": boolean, "isDecorativeObject": boolean, "isDocumentaryPhoto": boolean, "isArtworkOnly": boolean, "confidence": number, "reason": string }
@@ -1750,8 +1751,9 @@ Rules:
 1) ARTWORK ONLY: Must be the artwork itself (painting/print/drawing/sculpture) — NOT a photo of the artist, NOT an exhibition/install view, NOT a framed piece on a wall, NOT a catalog page, NOT a mockup.
 2) Reject if there are people, gallery spaces, display pedestals, or wide room context.
 3) If it's a physical object, accept ONLY if it is clearly the artwork itself isolated on a neutral background (no people, no gallery context).
-4) Must be one finished artwork, sharp and clear.
-5) If unsure, set isArtwork=false and confidence<=0.5.`;
+4) REJECT any image that contains large blocks of text, flyers, posters, captions, or promotional typography.
+5) Must be one finished artwork, sharp and clear.
+6) If unsure, set isArtwork=false and confidence<=0.5.`;
 
       const text = await this.gemini.generateTextFromImage({
         model: 'gemini-2.5-flash',
@@ -1786,6 +1788,10 @@ Return JSON only, no extra text.`,
       const isDecorativeObject = Boolean(parsed.isDecorativeObject);
       const isDocumentaryPhoto = Boolean(parsed.isDocumentaryPhoto);
       const isArtworkOnly = Boolean(parsed.isArtworkOnly);
+      const reasonText = this.normalizeText(parsed.reason ?? '');
+      const reasonHasText = ['text', 'flyer', 'poster', 'cartaz', 'banner', 'typography', 'caption', 'promo'].some(
+        (signal) => reasonText.includes(signal)
+      );
 
       let allow = isArtwork && confidence >= 0.6;
 
@@ -1800,6 +1806,10 @@ Return JSON only, no extra text.`,
         if (isDecorativeObject && !isArtworkOnly) {
           allow = false;
         }
+      }
+
+      if (reasonHasText) {
+        allow = false;
       }
 
       const result = {
