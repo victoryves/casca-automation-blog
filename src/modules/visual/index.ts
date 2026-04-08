@@ -188,25 +188,6 @@ export class VisualModule {
               continue;
             }
 
-            if (
-              this.shouldAcceptHighConfidenceTrustedArtwork(
-                source,
-                resolvedCandidate.url,
-                resolvedCandidate.objectHref || source.url,
-                `${resolvedCandidate.objectTitle} ${resolvedCandidate.alt} ${resolvedCandidate.title} ${resolvedCandidate.context}`,
-                artist
-              )
-            ) {
-              images.push({
-                url: resolvedCandidate.url,
-                caption: chosenLabel || `Artwork by ${artist.full_name}`,
-                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
-              });
-              selectedArtworkKeys.add(artworkKey);
-              console.log(`  ✓ Added direct-source image from ${source.institution}: High-confidence trusted-source acceptance`);
-              break;
-            }
-
             const quality = await this.verifyImageWithClaude(resolvedCandidate.url, artist);
             if (quality.verified && !this.isNegativeVerificationReason(quality.reason)) {
               images.push({
@@ -290,25 +271,6 @@ export class VisualModule {
             }
 
             // Even verified sources need quality check (could be banners/thumbnails)
-            if (
-              this.shouldAcceptHighConfidenceTrustedArtwork(
-                source,
-                normalizedUrl,
-                img.source_page || source.url,
-                `${img.alt} ${img.source_page ?? ''}`,
-                artist
-              )
-            ) {
-              images.push({
-                url: normalizedUrl,
-                caption: img.alt || `Artwork by ${artist.full_name}`,
-                attribution: `Source: ${source.institution}. Credibility: ${source.credibility_score?.toFixed(1) ?? '1.0'}.`,
-              });
-              selectedArtworkKeys.add(artworkKey);
-              console.log(`  ✓ Added verified image from ${source.institution}: High-confidence trusted-source acceptance`);
-              continue;
-            }
-
             const quality = await this.verifyImageWithClaude(normalizedUrl, artist);
             if (quality.verified) {
               images.push({
@@ -1197,38 +1159,8 @@ export class VisualModule {
     metadataText: string,
     artist: ArtistInfo
   ): boolean {
-    if (!this.isTrustedSource(source)) {
-      return false;
-    }
-
-    if (this.isMarketArtworkHost(imageUrl) && !this.assetUrlStronglyTargetsArtist(imageUrl, metadataText)) {
-      return false;
-    }
-
-    const normalizedMetadata = this.normalizeText(
-      `${metadataText} ${imageUrl} ${source.url} ${objectHref} ${source.content_summary ?? ''}`
-    );
-
-    if (this.containsNonArtworkSignals(normalizedMetadata)) {
-      return false;
-    }
-
-    if (!this.containsArtworkSignals(normalizedMetadata)) {
-      return false;
-    }
-
-    if (!this.metadataMatchesArtist(normalizedMetadata, artist.full_name)) {
-      return false;
-    }
-
-    const normalizedObjectHref = this.normalizeText(objectHref);
-    if (!normalizedObjectHref || !this.objectHrefTargetsArtist(normalizedObjectHref, artist.full_name)) {
-      if (!this.urlTargetsArtist(source.url, artist.full_name)) {
-        return false;
-      }
-    }
-
-    return this.isStrongArtworkAssetUrl(imageUrl);
+    // Disabled: always require Gemini vision verification to prevent artist photos.
+    return false;
   }
 
   private isQuotaOrVisionOutageReason(reason: string): boolean {
