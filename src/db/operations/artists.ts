@@ -5,20 +5,67 @@
 import { query } from '../client.js';
 import type { Artist, ArtistStatus } from '../../types/index.js';
 
+function normalizeArtistName(name: string): string {
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 export const artistOps = {
+  async findByNormalizedName(fullName: string): Promise<Artist | null> {
+    const normalizedTarget = normalizeArtistName(fullName);
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const artists = query.all<Artist>(`SELECT * FROM artists ORDER BY discovered_at ASC, id ASC`);
+    for (const artist of artists) {
+      if (normalizeArtistName(artist.full_name) === normalizedTarget) {
+        return artist;
+      }
+    }
+
+    return null;
+  },
+
   /**
    * Create a new artist
    */
   async create(artist: Omit<Artist, 'id'>): Promise<number> {
+    const existingArtist = await this.findByNormalizedName(artist.full_name);
+    if (existingArtist?.id) {
+      query.run(
+        `UPDATE artists
+         SET
+           birthplace_city = COALESCE(birthplace_city, ?),
+           birthplace_state = COALESCE(birthplace_state, ?),
+           visual_practice = COALESCE(visual_practice, ?),
+           metadata = COALESCE(metadata, ?)
+         WHERE id = ?`,
+        [
+          artist.birthplace_city ?? null,
+          artist.birthplace_state ?? null,
+          artist.visual_practice ?? null,
+          artist.metadata ?? null,
+          existingArtist.id,
+        ]
+      );
+      return existingArtist.id;
+    }
+
     const result = query.run(
-      `INSERT INTO artists (full_name, birthplace_city, birthplace_state, visual_practice, status)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO artists (full_name, birthplace_city, birthplace_state, visual_practice, status, metadata)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         artist.full_name,
         artist.birthplace_city ?? null,
         artist.birthplace_state ?? null,
         artist.visual_practice ?? null,
         artist.status ?? 'discovered',
+        artist.metadata ?? null,
       ]
     );
 
@@ -46,7 +93,11 @@ export const artistOps = {
     }
 
     const row = query.get<Artist>(`SELECT * FROM artists WHERE full_name = ?`, [fullName]);
-    return row ?? null;
+    if (row) {
+      return row;
+    }
+
+    return this.findByNormalizedName(fullName);
   },
 
   /**

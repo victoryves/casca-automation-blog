@@ -13,6 +13,7 @@ import { CandidateExtractor } from './candidate-extractor.js';
 import { SEED_ARTISTS, type SeedArtist } from './seed-artists.js';
 import { artistOps, draftOps, sourceOps } from '../../db/operations/index.js';
 import { PublicationHistoryModule } from '../publication-history/index.js';
+import { ScraperBridge } from '../scraper-bridge/index.js';
 import {
   getConfig,
   getInstitutionCredibility,
@@ -25,6 +26,7 @@ export class DiscoveryModule {
   private tavilyClient: TavilyClient;
   private duckDuckGoClient: DuckDuckGoClient;
   private extractor: CandidateExtractor;
+  private scraperBridge: ScraperBridge;
   private tavilyUnavailable = false;
   private publicationHistory: PublicationHistoryModule | null = null;
   private readonly STATE_MAP: Record<string, string> = {
@@ -47,6 +49,7 @@ export class DiscoveryModule {
     this.tavilyClient = new TavilyClient(tavilyApiKey);
     this.duckDuckGoClient = new DuckDuckGoClient();
     this.extractor = new CandidateExtractor();
+    this.scraperBridge = new ScraperBridge();
   }
 
   /**
@@ -322,12 +325,11 @@ export class DiscoveryModule {
     );
 
     for (const artist of artists) {
-      if (artist.status === 'published' || artist.status === 'rejected') {
-        reservedNames.add(this.normalizeName(artist.full_name));
-      }
+      reservedNames.add(this.normalizeName(artist.full_name));
     }
 
     const reservedDrafts = [
+      ...(await draftOps.findByStatus('pending')),
       ...(await draftOps.findByStatus('sent')),
       ...(await draftOps.findByStatus('approved')),
       ...(await draftOps.findByStatus('rejected')),
@@ -664,6 +666,22 @@ export class DiscoveryModule {
   private async fetchSourceSummary(
     url: string
   ): Promise<{ title: string; content: string; score: number; finalUrl: string } | null> {
+    try {
+      if (await this.scraperBridge.isPageFetchAvailable()) {
+        const fetched = await this.scraperBridge.fetchPage(url, 5000);
+        if (fetched.success && fetched.content && fetched.content.length >= 180) {
+          return {
+            title: fetched.title || url,
+            content: fetched.content,
+            score: fetched.extractor === 'firecrawl' ? 0.86 : 0.8,
+            finalUrl: fetched.final_url || fetched.url || url,
+          };
+        }
+      }
+    } catch {
+      // Fall back to basic HTML extraction below.
+    }
+
     try {
       const response = await axios.get<string>(url, {
         timeout: 12000,

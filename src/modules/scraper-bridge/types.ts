@@ -18,9 +18,11 @@ export interface ImageSearchResult {
 export interface PageFetchResult {
   success: boolean;
   url: string;
+  final_url?: string;
   title?: string;
   content?: string;
   content_length?: number;
+  extractor?: string;
   error?: string;
 }
 

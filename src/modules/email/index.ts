@@ -9,6 +9,7 @@ import { htmlToText } from 'html-to-text';
 import { marked } from 'marked';
 import { draftOps, artistOps, sourceOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
+import { PublicationHistoryModule } from '../publication-history/index.js';
 import type { Draft, Image, EmailTemplate } from '../../types/index.js';
 
 export interface SendApprovalEmailOptions {
@@ -30,13 +31,15 @@ interface PreparedImageOption {
 }
 
 const TARGET_APPROVAL_IMAGES = 3;
-const MIN_APPROVAL_IMAGES = 2;
+const MIN_APPROVAL_IMAGES = 3;
 
 export class EmailModule {
   private client: Resend;
+  private publicationHistory: PublicationHistoryModule | null;
 
   constructor(apiKey: string) {
     this.client = new Resend(apiKey);
+    this.publicationHistory = null;
   }
 
   /**
@@ -54,6 +57,8 @@ export class EmailModule {
     if (!artist) {
       throw new Error(`Artist ${draft.artist_id} not found`);
     }
+
+    await this.assertArtistNotPreviouslyPublished(artist.full_name);
 
     const existingDrafts = await draftOps.findByArtistId(draft.artist_id);
     const activeSentDraft = existingDrafts.find(
@@ -146,6 +151,108 @@ export class EmailModule {
         `Email sending failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private async assertArtistNotPreviouslyPublished(artistName: string): Promise<void> {
+    const haystacks = await this.ensurePublicationHistory().getPublishedPostHaystacks();
+    if (haystacks.length === 0) {
+      return;
+    }
+
+    if (this.isArtistPublishedInExternalBlog(artistName, haystacks)) {
+      throw new Error(
+        `Refusing to send approval email for already-published artist ${artistName}`
+      );
+    }
+  }
+
+  private ensurePublicationHistory(): PublicationHistoryModule {
+    if (!this.publicationHistory) {
+      const config = getConfig();
+      this.publicationHistory = new PublicationHistoryModule({
+        rssUrl: config.env.rssUrl,
+        hashnodeApiKey: config.env.hashnodeApiKey,
+        hashnodePublicationId: config.env.hashnodePublicationId,
+      });
+    }
+
+    return this.publicationHistory;
+  }
+
+  private isArtistPublishedInExternalBlog(
+    artistName: string,
+    publishedHaystacks: string[]
+  ): boolean {
+    if (publishedHaystacks.length === 0) {
+      return false;
+    }
+
+    const variants = this.buildArtistNameVariants(artistName);
+    if (variants.length === 0) {
+      return false;
+    }
+
+    return publishedHaystacks.some((haystack) =>
+      variants.some((variant) => haystack.includes(variant))
+    );
+  }
+
+  private buildArtistNameVariants(name: string): string[] {
+    const normalized = this.normalizeArtistName(name);
+    if (!normalized) {
+      return [];
+    }
+
+    const tokens = normalized.split(' ').filter(Boolean);
+    const variants = new Set<string>([normalized]);
+
+    if (tokens.length >= 2) {
+      variants.add(tokens.slice(-2).join(' '));
+    }
+
+    for (const token of tokens) {
+      if (this.isDistinctiveArtistToken(token)) {
+        variants.add(token);
+      }
+    }
+
+    return Array.from(variants).filter(Boolean);
+  }
+
+  private normalizeArtistName(name: string): string {
+    return name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  private isDistinctiveArtistToken(token: string): boolean {
+    if (token.length < 7) {
+      return false;
+    }
+
+    const commonTokens = new Set([
+      'silva',
+      'santos',
+      'souza',
+      'oliveira',
+      'costa',
+      'almeida',
+      'rodrigues',
+      'ferreira',
+      'pereira',
+      'barbosa',
+      'amorim',
+      'vieira',
+      'andrade',
+      'junior',
+      'neto',
+      'filho',
+    ]);
+
+    return !commonTokens.has(token);
   }
 
   /**

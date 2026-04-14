@@ -4,7 +4,9 @@ interface GeminiTextOptions {
   maxOutputTokens?: number;
   temperature?: number;
   model?: string;
+  thinkingBudget?: number;
   responseMimeType?: string;
+  responseJsonSchema?: Record<string, unknown>;
 }
 
 interface GeminiImageOptions {
@@ -15,7 +17,9 @@ interface GeminiImageOptions {
   maxOutputTokens?: number;
   temperature?: number;
   model?: string;
+  thinkingBudget?: number;
   responseMimeType?: string;
+  responseJsonSchema?: Record<string, unknown>;
 }
 
 interface GeminiCandidatePart {
@@ -60,7 +64,12 @@ export class GeminiClient {
       generationConfig: {
         temperature: options.temperature ?? 0.7,
         maxOutputTokens: options.maxOutputTokens ?? 4096,
+        thinkingConfig:
+          typeof options.thinkingBudget === 'number'
+            ? { thinkingBudget: options.thinkingBudget }
+            : undefined,
         responseMimeType: options.responseMimeType,
+        responseJsonSchema: options.responseJsonSchema,
       },
     });
 
@@ -91,7 +100,12 @@ export class GeminiClient {
       generationConfig: {
         temperature: options.temperature ?? 0,
         maxOutputTokens: options.maxOutputTokens ?? 512,
+        thinkingConfig:
+          typeof options.thinkingBudget === 'number'
+            ? { thinkingBudget: options.thinkingBudget }
+            : undefined,
         responseMimeType: options.responseMimeType,
+        responseJsonSchema: options.responseJsonSchema,
       },
     });
 

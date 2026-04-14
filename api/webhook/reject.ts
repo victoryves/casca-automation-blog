@@ -7,11 +7,13 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { spawn } from 'node:child_process';
 import { draftOps } from '../../src/db/operations/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/local.js';
 import { queueRejectedDraftReplacement } from '../../src/modules/rejections/index.js';
 
-// Fast webhook: queue the replacement and return immediately
+// Fast webhook: queue the replacement and try to send the next ready draft
+// before returning when the backlog already exists.
 export const maxDuration = 30;
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
@@ -36,7 +38,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const draft = await draftOps.findById(draftId);
     if (!draft) {
       closeDatabase();
-      return res.status(404).send(page('Not Found', `Draft ${draftId} not found.`));
+      console.warn(
+        `Draft ${draftId} not found locally during rejection. Triggering detached replacement flow.`
+      );
+
+      triggerReplacementAttemptDetached();
+      return res.status(200).send(
+        page(
+          'Rejected',
+          'This article was rejected successfully. The original draft was not present in this local queue, but a replacement run has already been triggered and the next article will be sent automatically.'
+        )
+      );
     }
 
     const alreadyRejected = draft.status === 'rejected';
@@ -52,11 +64,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const result = await queueRejectedDraftReplacement(draftId);
 
     closeDatabase();
+    triggerReplacementAttemptDetached();
 
     return res.status(200).send(
       page(
         result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
-        'This article was rejected successfully. A replacement request has been queued, and the background runner will automatically prepare and send a new article by email.'
+        'This article was rejected successfully. A replacement request has been queued, and the next article is now being prepared in the background.'
       )
     );
   } catch (error) {
@@ -64,6 +77,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     closeDatabase();
     return res.status(500).send(
       page('Error', `Rejection failed: ${error instanceof Error ? error.message : String(error)}`)
+    );
+  }
+}
+
+function triggerReplacementAttemptDetached(): void {
+  try {
+    const command =
+      'mkdir -p logs && ' +
+      '(npx tsx scripts/run-daily.ts --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
+      'npx tsx scripts/run-daily.ts --force >> logs/webhook-replacements.log 2>&1)';
+
+    const child = spawn('/bin/zsh', ['-lc', command], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    console.log('Queued detached replacement workflow after rejection');
+  } catch (replacementError) {
+    console.warn(
+      'Failed to queue detached replacement workflow after rejection.',
+      replacementError
     );
   }
 }

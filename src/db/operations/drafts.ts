@@ -65,12 +65,12 @@ export const draftOps = {
     return row ?? null;
   },
 
-  async findReadyPending(minImages = 2): Promise<(Draft & { parsedImages: Image[] }) | null> {
+  async findReadyPending(minImages = 3): Promise<(Draft & { parsedImages: Image[] }) | null> {
     const readyDrafts = await this.findReadyPendingDrafts(minImages);
     return readyDrafts[0] ?? null;
   },
 
-  async findReadyPendingDrafts(minImages = 2): Promise<Array<Draft & { parsedImages: Image[] }>> {
+  async findReadyPendingDrafts(minImages = 3): Promise<Array<Draft & { parsedImages: Image[] }>> {
     const pendingDrafts = await this.findByStatus('pending');
     const readyDrafts: Array<Draft & { parsedImages: Image[] }> = [];
 
@@ -91,9 +91,51 @@ export const draftOps = {
     });
   },
 
-  async countReadyPending(minImages = 2): Promise<number> {
+  async findHydratablePendingDrafts(
+    minImages = 3
+  ): Promise<Array<Draft & { parsedImages: Image[] }>> {
+    const pendingDrafts = await this.findByStatus('pending');
+    const hydratableDrafts: Array<Draft & { parsedImages: Image[] }> = [];
+
+    for (const draft of pendingDrafts) {
+      const parsedImages = draft.images ? (JSON.parse(draft.images) as Image[]) : [];
+      if (parsedImages.length < minImages) {
+        hydratableDrafts.push({
+          ...draft,
+          parsedImages,
+        });
+      }
+    }
+
+    return hydratableDrafts.sort((a, b) => {
+      const aTime = new Date(a.created_at ?? 0).getTime();
+      const bTime = new Date(b.created_at ?? 0).getTime();
+      return aTime - bTime;
+    });
+  },
+
+  async countReadyPending(minImages = 3): Promise<number> {
     const readyDrafts = await this.findReadyPendingDrafts(minImages);
     return readyDrafts.length;
+  },
+
+  async countCreatedOnDate(workflowDate: string, timeZone?: string): Promise<number> {
+    const resolvedTimeZone =
+      timeZone ||
+      getConfig().env.appTimezone ||
+      Intl.DateTimeFormat().resolvedOptions().timeZone ||
+      'UTC';
+    const rows = query.all<{ created_at: string | null }>(
+      `SELECT created_at
+       FROM drafts
+       WHERE created_at IS NOT NULL
+       ORDER BY created_at DESC`
+    );
+
+    return rows.filter((draft) => {
+      if (!draft.created_at) return false;
+      return this.formatDateInTimezone(this.parseTimestamp(draft.created_at), resolvedTimeZone) === workflowDate;
+    }).length;
   },
 
   /**

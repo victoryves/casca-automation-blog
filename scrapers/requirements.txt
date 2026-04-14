@@ -1,1 +1,5 @@
 scrapling[fetchers]
+goose3
+crawl4ai
+beautifulsoup4
+lxml

@@ -19,7 +19,9 @@ export interface ArticleStructure {
 
 export class SynthesisModule {
   private client: GeminiClient;
-  private readonly minWordCount = 650;
+  private readonly minWordCount = 450;
+  private readonly maxWordCount = 700;
+  private readonly maxParagraphs = 4;
 
   constructor(apiKey: string) {
     this.client = new GeminiClient(apiKey);
@@ -134,8 +136,8 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
         const expanded = await this.client.generateText({
           model: 'gemini-2.5-flash',
-          systemInstruction: `${prompt.system}\n\nIMPORTANT: Your response MUST be between 800 and 1200 words. If you are unsure, err on the longer side while staying factual.`,
-          userPrompt: `${userPrompt}\n\nYour previous response was too short. Rewrite the full article in the required format and length (800-1200 words).`,
+          systemInstruction: `${prompt.system}\n\nIMPORTANT: Your response MUST stay between 450 and 700 words and the body MUST use no more than 4 paragraphs.`,
+          userPrompt: `${userPrompt}\n\nYour previous response was too short. Rewrite the full article in the required format, keep it between 450 and 700 words, and use no more than 4 body paragraphs.`,
           maxOutputTokens: 4096,
           temperature: 0.7,
         });
@@ -150,8 +152,22 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
         article = this.expandWithSources(article, artist, sources);
       }
 
+      article = this.enforceLengthAndParagraphs(article);
+
+      if (this.isBelowMinLength(article)) {
+        throw new Error(
+          `Generated article remained below minimum length after retries (${this.wordCount(article.content)} words)`
+        );
+      }
+
       return article;
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('below minimum length')
+      ) {
+        throw error;
+      }
       console.error('Gemini API error:', error);
       console.warn('Falling back to deterministic article generation');
       return this.buildFallbackArticle(artist, sources);
@@ -190,7 +206,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
           .split(',')
           .map((k) => k.trim())
           .filter((k) => k.length > 0);
-      } else if (inContent && trimmed.length > 0) {
+      } else if (inContent) {
         contentLines.push(line);
       }
     }
@@ -202,7 +218,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     if (!subtitle) {
       subtitle = 'A visual artist from Northeast Brazil';
     }
-    if (contentLines.length === 0) {
+    if (!contentLines.some((line) => line.trim().length > 0)) {
       contentLines.push(response);
     }
 
@@ -212,12 +228,14 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
     title = this.upgradeWeakTitle(title, artist);
 
-    return {
+    const parsedArticle = {
       title,
       subtitle,
-      content: contentLines.join('\n').trim(),
+      content: contentLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
       keywords,
     };
+
+    return this.enforceLengthAndParagraphs(parsedArticle);
   }
 
   private wordCount(value: string): number {
@@ -226,6 +244,85 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
   private isBelowMinLength(article: ArticleStructure): boolean {
     return this.wordCount(article.content) < this.minWordCount;
+  }
+
+  private enforceLengthAndParagraphs(article: ArticleStructure): ArticleStructure {
+    const paragraphs = article.content
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean);
+
+    const mergedParagraphs = this.limitParagraphs(paragraphs, this.maxParagraphs);
+    let content = mergedParagraphs.join('\n\n').trim();
+
+    if (this.wordCount(content) > this.maxWordCount) {
+      content = this.trimToWordLimit(content, this.maxWordCount);
+      const reparagraphed = this.limitParagraphs(
+        content
+          .split(/\n\s*\n/)
+          .map((paragraph) => paragraph.trim())
+          .filter(Boolean),
+        this.maxParagraphs
+      );
+      content = reparagraphed.join('\n\n').trim();
+    }
+
+    return {
+      ...article,
+      content,
+    };
+  }
+
+  private limitParagraphs(paragraphs: string[], maxParagraphs: number): string[] {
+    if (paragraphs.length <= maxParagraphs) {
+      return paragraphs;
+    }
+
+    const limited = [...paragraphs];
+    while (limited.length > maxParagraphs) {
+      const tail = limited.pop();
+      if (!tail) break;
+      limited[limited.length - 1] = `${limited[limited.length - 1]} ${tail}`.trim();
+    }
+
+    return limited;
+  }
+
+  private trimToWordLimit(content: string, maxWords: number): string {
+    const normalized = content.replace(/\n{3,}/g, '\n\n').trim();
+    const paragraphs = normalized
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean);
+
+    const trimmedParagraphs: string[] = [];
+    let wordsUsed = 0;
+
+    for (const paragraph of paragraphs) {
+      const words = paragraph.split(/\s+/).filter(Boolean);
+      if (wordsUsed >= maxWords) {
+        break;
+      }
+
+      if (wordsUsed + words.length <= maxWords) {
+        trimmedParagraphs.push(paragraph);
+        wordsUsed += words.length;
+        continue;
+      }
+
+      const remainingWords = maxWords - wordsUsed;
+      if (remainingWords <= 0) {
+        break;
+      }
+
+      const truncated = words.slice(0, remainingWords).join(' ').replace(/[,:;]$/, '').trim();
+      if (truncated) {
+        trimmedParagraphs.push(`${truncated}.`);
+      }
+      break;
+    }
+
+    return trimmedParagraphs.join('\n\n').trim();
   }
 
   private expandWithSources(
@@ -302,19 +399,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     const normalizedTitle = this.normalizeText(title);
     const normalizedFullName = this.normalizeText(fullName);
 
-    if (normalizedTitle.includes(normalizedFullName)) {
-      return true;
-    }
-
-    const surname = normalizedFullName.split(/\s+/).filter(Boolean).pop();
-    return Boolean(surname && surname.length >= 3 && normalizedTitle.includes(surname));
-  }
-
-  private normalizeText(value: string): string {
-    return value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
+    return normalizedTitle.includes(normalizedFullName);
   }
 
   private upgradeWeakTitle(title: string, artist: Artist): string {

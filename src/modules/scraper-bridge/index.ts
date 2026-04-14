@@ -19,25 +19,56 @@ const VENV_PYTHON = path.join(SCRAPERS_DIR, '.venv', 'bin', 'python3');
 const TIMEOUT_MS = 60_000;
 
 export class ScraperBridge {
-  private availabilityCache: boolean | null = null;
+  private imageAvailabilityCache: boolean | null = null;
+  private pageAvailabilityCache: boolean | null = null;
 
   /**
-   * Check if the Python scraper environment is available.
-   * Result is cached after first call.
+   * Check if the image scraping environment is available.
+   * Image search/extraction currently depends on Scrapling.
    */
   async isAvailable(): Promise<boolean> {
-    if (this.availabilityCache !== null) {
-      return this.availabilityCache;
+    return this.isImagePipelineAvailable();
+  }
+
+  async isImagePipelineAvailable(): Promise<boolean> {
+    if (this.imageAvailabilityCache !== null) {
+      return this.imageAvailabilityCache;
     }
 
     try {
       await this.runPython('-c', ['import scrapling; print("ok")']);
-      this.availabilityCache = true;
+      this.imageAvailabilityCache = true;
     } catch {
-      this.availabilityCache = false;
+      this.imageAvailabilityCache = false;
     }
 
-    return this.availabilityCache;
+    return this.imageAvailabilityCache;
+  }
+
+  /**
+   * Check if at least one page-fetch backend is available.
+   * This supports Scrapling, Goose, Crawl4AI, or Firecrawl.
+   */
+  async isPageFetchAvailable(): Promise<boolean> {
+    if (this.pageAvailabilityCache !== null) {
+      return this.pageAvailabilityCache;
+    }
+
+    try {
+      await this.runPython('-c', [
+        [
+          'import importlib.util, os',
+          'mods = ("scrapling", "goose3", "crawl4ai")',
+          'available = any(importlib.util.find_spec(mod) for mod in mods) or bool(os.getenv("FIRECRAWL_API_KEY"))',
+          'print("ok" if available else "")',
+        ].join('; '),
+      ]);
+      this.pageAvailabilityCache = true;
+    } catch {
+      this.pageAvailabilityCache = false;
+    }
+
+    return this.pageAvailabilityCache;
   }
 
   /**
@@ -95,6 +126,7 @@ export class ScraperBridge {
       return {
         success: false,
         url,
+        final_url: url,
         error: error instanceof Error ? error.message : String(error),
       };
     }

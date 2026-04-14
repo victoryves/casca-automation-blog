@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Setup script for Python Scrapling scrapers.
+# Setup script for CASCA's Python scraping stack.
 # Creates a virtual environment, installs dependencies, and sets up the browser.
 #
 # Usage: bash scripts/setup-scrapers.sh
@@ -35,7 +35,7 @@ fi
 
 # Activate and install dependencies
 echo ""
-echo "Installing dependencies..."
+echo "Installing dependencies (Scrapling + Goose3 + Crawl4AI)..."
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 "$VENV_DIR/bin/pip" install -r "$SCRAPERS_DIR/requirements.txt"
 
@@ -54,21 +54,32 @@ echo "Installing Chromium browser..."
 
 # Verify installation
 echo ""
-echo "Verifying Scrapling installation..."
-if "$VENV_DIR/bin/python3" -c "import scrapling; print(f'Scrapling {scrapling.__version__} OK')" 2>/dev/null; then
-    echo "Scrapling is ready."
-else
-    # Try without version (some versions may not have __version__)
-    if "$VENV_DIR/bin/python3" -c "import scrapling; print('Scrapling OK')" 2>/dev/null; then
-        echo "Scrapling is ready."
-    else
-        echo "ERROR: Scrapling import failed."
-        exit 1
-    fi
+echo "Verifying scraper backends..."
+if ! "$VENV_DIR/bin/python3" -c "import scrapling; print('Scrapling OK')" 2>/dev/null; then
+    echo "ERROR: Scrapling import failed."
+    exit 1
 fi
+
+if "$VENV_DIR/bin/python3" -c "import goose3; print('Goose3 OK')" 2>/dev/null; then
+    echo "Goose3 is ready."
+else
+    echo "WARNING: Goose3 import failed."
+fi
+
+if "$VENV_DIR/bin/python3" -c "import crawl4ai; print('Crawl4AI OK')" 2>/dev/null; then
+    echo "Crawl4AI is ready."
+else
+    echo "WARNING: Crawl4AI import failed."
+fi
+
+echo "Scrapling is ready."
 
 echo ""
 echo "=== Setup Complete ==="
+echo ""
+echo "Optional:"
+echo "  export FIRECRAWL_API_KEY=fc-..."
+echo "  # Firecrawl will then be used as an additional page-extraction backend."
 echo ""
 echo "Test with:"
 echo "  $VENV_DIR/bin/python3 $SCRAPERS_DIR/search_images.py \"Cícero Dias painting\" bing 3"

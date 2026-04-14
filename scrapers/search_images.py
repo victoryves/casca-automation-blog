@@ -2,6 +2,12 @@
 """
 Search images from Bing, DuckDuckGo, and Google using Scrapling.
 
+Google Images uses the large-image filter (`tbs=isz:l`) and parses
+original image cards from the results payload. This is inspired by:
+- crawl-original-google-images
+- AutoCrawler (full-resolution Google mode)
+- google-arts-crawler (high-quality arts-focused sources)
+
 Usage:
     python search_images.py <query> <engine> <limit>
 
@@ -17,6 +23,19 @@ Errors go to stderr, never stdout.
 import json
 import sys
 import traceback
+from urllib.parse import quote_plus
+
+
+def decode_google_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        return (
+            value.replace('\\u003d', '=')
+            .replace('\\u0026', '&')
+            .replace('\\u002F', '/')
+            .replace('\\"', '"')
+        )
 
 
 def search_bing(query: str, limit: int) -> list[dict]:
@@ -108,14 +127,62 @@ def search_google(query: str, limit: int) -> list[dict]:
     import re
     from scrapling import StealthyFetcher
 
-    url = f"https://www.google.com/search?q={query.replace(' ', '+')}&tbm=isch&num=50"
+    url = (
+        "https://www.google.com/search?"
+        f"q={quote_plus(query)}&tbm=isch&udm=2&num=50&tbs=isz:l"
+    )
     page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
 
     images = []
     html = page.html_content
 
-    # Google Images stores data in script tags — parse from raw HTML
-    if html:
+    # Google large-image results contain a card payload with:
+    # thumbnail, original image, dimensions, source page, and title.
+    # This is much more reliable than scraping rendered <img> tags.
+    card_pattern = re.compile(
+        r'\[0,"(?P<id>[^"]+)",\["(?P<thumb>https?://[^"]+)",\d+,\d+\],'
+        r'\["(?P<image>https?://[^"]+)",(?P<width>\d+),(?P<height>\d+)\],'
+        r'null,0,"[^"]*",null,0,\{"2000":\[null,"(?P<domain>[^"]*)","(?P<size>[^"]*)"\],'
+        r'"2001":\[[^\]]*\],"2003":\[null,"[^"]*","(?P<source>https?://[^"]+)","(?P<title>[^"]+)"',
+        re.S,
+    )
+
+    seen = set()
+    for match in card_pattern.finditer(html):
+        if len(images) >= limit:
+            break
+
+        try:
+            img_url = decode_google_string(match.group('image'))
+            source_page = decode_google_string(match.group('source'))
+            title = decode_google_string(match.group('title'))
+            width = int(match.group('width'))
+            height = int(match.group('height'))
+        except Exception:
+            continue
+
+        if (
+            not img_url.startswith('http')
+            or 'google.com' in img_url
+            or 'gstatic.com' in img_url
+            or 'googleusercontent.com' in img_url
+            or width < 400
+            or height < 400
+        ):
+            continue
+
+        if img_url in seen:
+            continue
+
+        seen.add(img_url)
+        images.append({
+            'url': img_url,
+            'caption': title or f'Image result for {query}',
+            'source_page': source_page or '',
+        })
+
+    # Fallback: parse script payload directly if card extraction missed.
+    if not images and html:
         for match in re.finditer(r'\["(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)",\s*(\d+),\s*(\d+)\]', html):
             if len(images) >= limit:
                 break
@@ -132,7 +199,7 @@ def search_google(query: str, limit: int) -> list[dict]:
                     'source_page': '',
                 })
 
-    # Fallback: direct img tags
+    # Last-resort fallback: direct img tags
     if not images:
         for img in page.css('img[data-src], img[data-iurl]'):
             if len(images) >= limit:
@@ -152,8 +219,8 @@ def search_google(query: str, limit: int) -> list[dict]:
 
 ENGINES = {
     'bing': search_bing,
-    'duckduckgo': search_duckduckgo,
     'google': search_google,
+    'duckduckgo': search_duckduckgo,
 }
 
 
@@ -171,8 +238,11 @@ def main():
 
         if engine == 'all':
             for eng_name, eng_func in ENGINES.items():
+                if len(all_images) >= limit:
+                    break
                 try:
-                    results = eng_func(query, limit)
+                    remaining = max(limit - len(all_images), 1)
+                    results = eng_func(query, remaining)
                     all_images.extend(results)
                     print(f"[{eng_name}] Found {len(results)} images", file=sys.stderr)
                 except Exception as e:
