@@ -2,18 +2,21 @@
  * Vercel Serverless Function - One-Click Rejection
  *
  * GET /api/webhook/reject?draft=ID&token=SECRET
- * Rejects a draft, queues a replacement request in the database,
- * and lets the background runner discover a new artist and send a new approval email.
+ * Rejects a draft and immediately attempts to send the next approval email
+ * before falling back to background replenishment.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { spawn } from 'node:child_process';
-import { draftOps } from '../../src/db/operations/index.js';
+import { artistOps, draftOps } from '../../src/db/operations/index.js';
+import { getConfig } from '../../src/config/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/local.js';
+import { EmailModule } from '../../src/modules/email/index.js';
+import { EmergencyFallbackModule } from '../../src/modules/emergency/index.js';
 import { queueRejectedDraftReplacement } from '../../src/modules/rejections/index.js';
 
-// Fast webhook: queue the replacement and try to send the next ready draft
-// before returning when the backlog already exists.
+const MIN_APPROVAL_IMAGES = 3;
+
 export const maxDuration = 30;
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<VercelResponse | void> {
@@ -42,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         `Draft ${draftId} not found locally during rejection. Triggering detached replacement flow.`
       );
 
-      triggerReplacementAttemptDetached();
+      triggerReplacementAttemptDetached({ preferSend: true });
       return res.status(200).send(
         page(
           'Rejected',
@@ -62,14 +65,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     console.log(`Rejecting draft ${draftId}: ${draft.title}`);
     const result = await queueRejectedDraftReplacement(draftId);
+    const replacement = await sendImmediateReplacement(draftId);
 
     closeDatabase();
-    triggerReplacementAttemptDetached();
+
+    if (replacement.sent) {
+      triggerReplacementAttemptDetached({ preferSend: false });
+      return res.status(200).send(
+        page(
+          result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
+          `This article was rejected successfully. A new approval email for ${replacement.artistName} has already been sent.`
+        )
+      );
+    }
+
+    triggerReplacementAttemptDetached({ preferSend: true });
 
     return res.status(200).send(
       page(
         result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
-        'This article was rejected successfully. A replacement request has been queued, and the next article is now being prepared in the background.'
+        'This article was rejected successfully. No ready replacement was available instantly, so a priority replacement run has been triggered in the background.'
       )
     );
   } catch (error) {
@@ -81,12 +96,119 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 }
 
-function triggerReplacementAttemptDetached(): void {
+async function sendImmediateReplacement(
+  rejectedDraftId: number
+): Promise<{ sent: boolean; draftId?: number; artistName?: string }> {
+  const config = getConfig();
+  const email = new EmailModule(config.env.resendApiKey);
+  const emergencyFallback = new EmergencyFallbackModule();
+  const rejectedDraft = await draftOps.findById(rejectedDraftId);
+  const excludedArtistIds = new Set<number>();
+
+  if (rejectedDraft?.artist_id) {
+    excludedArtistIds.add(rejectedDraft.artist_id);
+  }
+
+  const readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+
+  for (const pendingDraft of readyPendingDrafts) {
+    if (!pendingDraft.id || excludedArtistIds.has(pendingDraft.artist_id)) {
+      continue;
+    }
+
+    const artist = await artistOps.findById(pendingDraft.artist_id);
+    if (!artist) {
+      await draftOps.delete(pendingDraft.id);
+      continue;
+    }
+
+    try {
+      await email.sendApprovalEmail({
+        draftId: pendingDraft.id,
+        images: pendingDraft.parsedImages,
+      });
+
+      return {
+        sent: true,
+        draftId: pendingDraft.id,
+        artistName: artist.full_name,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Immediate replacement send failed for pending draft ${pendingDraft.id}: ${message}`
+      );
+
+      if (isDiscardableImmediateSendError(message)) {
+        await draftOps.delete(pendingDraft.id);
+        excludedArtistIds.add(pendingDraft.artist_id);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const fallback = await emergencyFallback.prepareFallbackDraft({
+      minImages: MIN_APPROVAL_IMAGES,
+      excludedArtistIds,
+    });
+
+    if (!fallback) {
+      break;
+    }
+
+    try {
+      await email.sendApprovalEmail({
+        draftId: fallback.draftId,
+        images: fallback.images,
+      });
+
+      return {
+        sent: true,
+        draftId: fallback.draftId,
+        artistName: fallback.artistName,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Immediate emergency replacement send failed for draft ${fallback.draftId}: ${message}`
+      );
+      excludedArtistIds.add(fallback.artistId);
+      await draftOps.updateStatus(fallback.draftId, 'rejected');
+
+      if (!isDiscardableImmediateSendError(message)) {
+        throw error;
+      }
+    }
+  }
+
+  return { sent: false };
+}
+
+function isDiscardableImmediateSendError(message: string): boolean {
+  return [
+    'validated images',
+    'fewer than',
+    'duplicate approval email',
+    'already-published artist',
+    'already in sent status',
+  ].some((fragment) => message.includes(fragment));
+}
+
+function triggerReplacementAttemptDetached(options: { preferSend: boolean }): void {
   try {
-    const command =
-      'mkdir -p logs && ' +
-      '(npx tsx scripts/run-daily.ts --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
-      'npx tsx scripts/run-daily.ts --force >> logs/webhook-replacements.log 2>&1)';
+    const command = options.preferSend
+      ? 'mkdir -p logs && ' +
+        '((npx tsx scripts/run-daily.ts --wait-for-lock --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
+        'npx tsx scripts/run-daily.ts --wait-for-lock --force >> logs/webhook-replacements.log 2>&1) && ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
+        'npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1))'
+      : 'mkdir -p logs && ' +
+        '((npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
+        'npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1) && ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true))';
 
     const child = spawn('/bin/zsh', ['-lc', command], {
       cwd: process.cwd(),
@@ -94,7 +216,9 @@ function triggerReplacementAttemptDetached(): void {
       stdio: 'ignore',
     });
     child.unref();
-    console.log('Queued detached replacement workflow after rejection');
+    console.log(
+      `Queued detached replacement workflow after rejection (${options.preferSend ? 'send+prepare' : 'prepare-only'})`
+    );
   } catch (replacementError) {
     console.warn(
       'Failed to queue detached replacement workflow after rejection.',

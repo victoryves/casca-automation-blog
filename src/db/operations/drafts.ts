@@ -11,6 +11,19 @@ export const draftOps = {
    * Create a new draft
    */
   async create(draft: Omit<Draft, 'id'>, images?: Image[]): Promise<number> {
+    const existingPendingDraft = query.get<{ id: number }>(
+      `SELECT id
+       FROM drafts
+       WHERE artist_id = ? AND status = 'pending'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [draft.artist_id]
+    );
+
+    if (existingPendingDraft?.id) {
+      return existingPendingDraft.id;
+    }
+
     const result = query.run(
       `INSERT INTO drafts (artist_id, title, subtitle, content, images, status)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -110,7 +123,7 @@ export const draftOps = {
     return hydratableDrafts.sort((a, b) => {
       const aTime = new Date(a.created_at ?? 0).getTime();
       const bTime = new Date(b.created_at ?? 0).getTime();
-      return aTime - bTime;
+      return bTime - aTime;
     });
   },
 

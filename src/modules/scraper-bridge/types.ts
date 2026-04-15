@@ -6,6 +6,11 @@ export interface ScrapedImage {
   url: string;
   caption: string;
   source_page: string;
+  width?: number;
+  height?: number;
+  source_domain?: string;
+  engine?: string;
+  pipeline?: string;
 }
 
 export interface ImageSearchResult {
@@ -23,6 +28,7 @@ export interface PageFetchResult {
   content?: string;
   content_length?: number;
   extractor?: string;
+  discovered_urls?: string[];
   error?: string;
 }
 

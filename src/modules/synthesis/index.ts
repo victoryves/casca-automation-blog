@@ -155,9 +155,10 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       article = this.enforceLengthAndParagraphs(article);
 
       if (this.isBelowMinLength(article)) {
-        throw new Error(
-          `Generated article remained below minimum length after retries (${this.wordCount(article.content)} words)`
+        console.warn(
+          `  ⚠ Generated article remained below minimum length after retries (${this.wordCount(article.content)} words). Falling back to deterministic article generation.`
         );
+        article = this.buildFallbackArticle(artist, sources);
       }
 
       return article;

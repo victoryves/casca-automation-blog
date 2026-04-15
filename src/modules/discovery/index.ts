@@ -4,8 +4,6 @@
  * Main entry point for artist discovery functionality.
  */
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import axios from 'axios';
 import { TavilyClient } from './tavily-client.js';
 import { DuckDuckGoClient } from './duckduckgo-client.js';
@@ -68,11 +66,6 @@ export class DiscoveryModule {
     }
 
     const existingNames = await this.loadExistingArtistNames();
-    const failedTodayNames = await this.loadFailedArtistNamesForToday(config.env.appTimezone);
-    for (const failedName of failedTodayNames) {
-      existingNames.add(failedName);
-    }
-
     // 1) Seed list: name-first discovery (primary strategy)
     await this.discoverFromSeedList({
       config,
@@ -253,9 +246,9 @@ export class DiscoveryModule {
       try {
         const { sources, queriesUsed } = await this.collectSeedSources(seed, resolvedStates, config);
 
-        if (sources.length < 2) {
+        if (!this.hasSufficientSourcesForSeed(sources)) {
           errors.push(
-            `Seed search produced insufficient sources for ${seed.name} (${sources.length})`
+            `Seed search produced insufficient trusted sources for ${seed.name} (${sources.length})`
           );
           continue;
         }
@@ -345,32 +338,6 @@ export class DiscoveryModule {
     return reservedNames;
   }
 
-  private async loadFailedArtistNamesForToday(appTimezone?: string): Promise<Set<string>> {
-    try {
-      const workflowDate = new Intl.DateTimeFormat('en-CA', {
-        timeZone: appTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date());
-      const filePath = path.join(process.cwd(), 'logs', 'daily', `failed-artists-${workflowDate}.json`);
-      const content = await fs.readFile(filePath, 'utf8');
-      const parsed = JSON.parse(content);
-
-      if (!Array.isArray(parsed)) {
-        return new Set<string>();
-      }
-
-      return new Set(
-        parsed
-          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-          .map((value) => this.normalizeName(value))
-      );
-    } catch {
-      return new Set<string>();
-    }
-  }
-
   private resolveStates(stateCodes?: string): string[] {
     if (!stateCodes) return [];
     const codes = stateCodes
@@ -379,6 +346,14 @@ export class DiscoveryModule {
       .filter(Boolean);
 
     return codes.map((code) => this.STATE_MAP[code] ?? code);
+  }
+
+  private hasSufficientSourcesForSeed(
+    sources: Omit<Source, 'id' | 'artist_id'>[]
+  ): boolean {
+    const highCredibility = sources.filter((source) => (source.credibility_score ?? 0) >= 0.9).length;
+    const credible = sources.filter((source) => (source.credibility_score ?? 0) >= 0.5).length;
+    return highCredibility >= 1 || credible >= 2;
   }
 
   private balanceSeedsAcrossCategories(seeds: SeedArtist[]): SeedArtist[] {
@@ -479,20 +454,12 @@ export class DiscoveryModule {
     const queriesUsed: string[] = [];
     const guessedSources = await this.collectGuessedSeedSources(seed, config);
 
-    if (guessedSources.length >= 2) {
+    if (this.hasSufficientSourcesForSeed(guessedSources)) {
       console.log(`  ✓ Using guessed fallback sources for ${seed.name}`);
       return { sources: guessedSources, queriesUsed };
     }
 
-    if (this.tavilyUnavailable) {
-      return { sources: guessedSources, queriesUsed };
-    }
-
     for (const query of queries) {
-      if (this.tavilyUnavailable) {
-        break;
-      }
-
       try {
         const response = await this.searchWithFallback({
           query,
@@ -513,7 +480,7 @@ export class DiscoveryModule {
           3
         );
 
-        if (interimSources.length >= 2) {
+        if (this.hasSufficientSourcesForSeed(interimSources)) {
           return { sources: interimSources, queriesUsed };
         }
       } catch (error) {
@@ -540,7 +507,7 @@ export class DiscoveryModule {
       console.log(`  ✓ Added ${merged.length - sources.length} guessed fallback source(s) for ${seed.name}`);
     }
 
-    if (merged.length >= 2) {
+    if (this.hasSufficientSourcesForSeed(merged)) {
       return { sources: merged, queriesUsed };
     }
 
@@ -625,6 +592,9 @@ export class DiscoveryModule {
     return [
       `https://www.escritoriodearte.com/artista/${slug}`,
       `https://dailyartfair.com/artist/${slug}`,
+      `https://www.mutualart.com/Artist/${encodeURIComponent(artistName.replace(/\s+/g, '-'))}`,
+      `https://www.artsy.net/artist/${slug}`,
+      `https://artsandculture.google.com/entity/${wikiTitle}`,
       `https://en.wikipedia.org/wiki/${wikiTitle}`,
       `https://pt.wikipedia.org/wiki/${wikiTitle}`,
       `https://www.wikidata.org/wiki/${wikiTitle}`,
@@ -953,6 +923,13 @@ export class DiscoveryModule {
     searchDepth?: 'basic' | 'advanced';
     maxResults?: number;
   }): Promise<{ query: string; results: TavilySearchResult[] }> {
+    if (this.tavilyUnavailable) {
+      return this.duckDuckGoClient.search({
+        query: options.query,
+        maxResults: options.maxResults,
+      });
+    }
+
     try {
       return await this.tavilyClient.search(options);
     } catch (error) {

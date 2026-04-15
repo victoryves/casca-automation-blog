@@ -2,27 +2,46 @@
 
 An automated editorial discovery and publishing assistant for CASCA Archive. This system identifies, verifies, and editorializes stories of visual artists from Northeast Brazil, producing Medium-style articles in English with strict human-in-the-loop editorial control.
 
+## Authoritative Documentation
+
+The operational source of truth for the current system is:
+
+- [docs/SYSTEM_RUNBOOK.md](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/docs/SYSTEM_RUNBOOK.md)
+
+Older documents in this repository are useful as historical context, but some of them no longer reflect the live behavior of the system.
+
 ## Key Principle
 
 **Nothing publishes automatically.** All articles require explicit email approval before publication.
 
+## Current Operating Model
+
+- The system mines artists and sources continuously enough to maintain a backlog target of 5 approval-ready pending drafts.
+- A draft is only considered ready when it has:
+  - an English article with the required editorial structure
+  - a title containing the artist name
+  - at least 3 approval-ready artwork images
+  - a non-published artist
+- Rejection is supposed to trigger immediate replacement from the ready queue first, then continued replenishment in the background.
+
 ## Features
 
-- 🔍 **Automated Discovery**: Uses Tavily API to find artists from Northeast Brazil
-- ✅ **Source Verification**: Validates information against trusted institutional sources
-- ✍️ **AI-Powered Writing**: Generates Medium-style articles using Claude
-- 🖼️ **Image Sourcing**: Finds and attributes images from Wikimedia Commons
-- 📧 **Email Approval**: Sends daily article previews for human approval
-- 🚀 **One-Click Publishing**: Reply "poste" to publish to Medium
+- 🔍 **Automated Discovery**: Uses Tavily plus source enrichment to find visual artists from Northeast Brazil
+- ✅ **Source Verification**: Validates information against trusted institutional and museum-style sources
+- ✍️ **AI-Powered Writing**: Generates English articles with Gemini under editorial constraints
+- 🖼️ **Robust Image Sourcing**: Uses a dedicated Google Images stage plus Bing/DDG fallback and strict artwork validation
+- 📧 **Email Approval**: Sends article previews for human approval only
+- 🚀 **One-Click Publishing**: Approval is still required before anything reaches the blog
 
 ## Tech Stack
 
 - **Runtime**: Node.js 20+ with TypeScript
 - **Database**: SQLite (better-sqlite3)
-- **AI**: Anthropic Claude
+- **AI**: Google Gemini
 - **Email**: Resend (sending + inbound parsing)
-- **Search**: Tavily API
-- **Deployment**: Vercel (webhooks) + OpenClaw (scheduling)
+- **Search**: Tavily API + multi-backend scraping
+- **Scraping**: Firecrawl, Scrapling, Goose3, Crawl4AI, and a dedicated Google Images search stage with Bing/DDG fallback
+- **Deployment**: Vercel (webhooks) + scheduled runner
 
 ## Project Structure
 
@@ -138,27 +157,28 @@ npm run build
 
 3. Set environment variables in Vercel dashboard
 
-### Scheduling (OpenClaw)
+### Scheduling
 
-Configure daily execution at 9 AM BRT:
+Configure daily execution for 5 AM in the app timezone:
 
 ```bash
-# OpenClaw configuration
-*/
-cron: "0 9 * * *"
+# Example cron
+cron: "0 5 * * *"
 command: "cd /path/to/casca-automation-blog && npm run daily"
-timezone: "America/Recife"
+timezone: "America/Toronto"
 ```
 
 ## Workflow
 
 1. **Discovery**: Search for artists from Northeast Brazil
-2. **Verification**: Validate against trusted institutional sources
-3. **Synthesis**: Generate article using Claude
-4. **Visual**: Source images from Wikimedia Commons
-5. **Email**: Send approval request to editor
-6. **Approval**: Wait for "poste" reply
-7. **Publishing**: Send formatted article to Medium
+2. **Source Enrichment**: Expand trusted artist sources via Firecrawl/Scrapling/Goose/Crawl4AI
+3. **Verification**: Validate candidate eligibility
+4. **Synthesis**: Generate article using Gemini
+5. **Editorial Gate**: Reject weak drafts before they enter the queue
+6. **Visual**: Source only artwork images through the dedicated Google/Bing/DDG pipeline and vision validation
+7. **Email**: Send approval request to editor only when the draft is truly ready
+8. **Approval**: Wait for explicit approval
+9. **Publishing**: Publish only after approval
 
 ## Database Schema
 

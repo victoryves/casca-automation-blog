@@ -60,7 +60,7 @@ export class PublicationHistoryModule {
 
     return entries.map((entry) =>
       this.normalizeText(
-        [entry.title, entry.url, entry.description ?? '', entry.content ?? ''].join(' ')
+        [entry.title, entry.url].join(' ')
       )
     );
   }

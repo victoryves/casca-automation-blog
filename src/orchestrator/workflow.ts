@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { initDatabase, closeDatabase } from '../db/local.js';
 import { artistOps, draftOps, publishingOps, sourceOps } from '../db/operations/index.js';
-import { getConfig } from '../config/index.js';
+import { getConfig, getInstitutionCredibility, getInstitutionName } from '../config/index.js';
 import { DiscoveryModule } from '../modules/discovery/index.js';
 import { VerificationModule } from '../modules/verification/index.js';
 import { SynthesisModule } from '../modules/synthesis/index.js';
@@ -26,6 +26,7 @@ export interface WorkflowOptions {
   dryRun?: boolean;
   skipDiscovery?: boolean;
   forceRun?: boolean;
+  prepareOnly?: boolean;
 }
 
 interface PendingReplacementRequest {
@@ -35,7 +36,9 @@ interface PendingReplacementRequest {
 }
 
 const MIN_APPROVAL_IMAGES = 3;
-const NORMAL_SEND_HOUR = 8;
+const MIN_APPROVAL_WORDS = 420;
+const MAX_APPROVAL_PARAGRAPHS = 4;
+const NORMAL_SEND_HOUR = 5;
 const TARGET_READY_PENDING_DRAFTS = 5;
 const TARGET_NEW_DRAFTS_PER_DAY = 5;
 const DISCOVERY_BATCH_SIZE = 15;
@@ -116,10 +119,20 @@ export class WorkflowOrchestrator {
       let sendStillNeeded = hasPendingReplacementRequest || (!emailSentToday && sendWindowOpen);
       let preparationSlotsNeeded = computePreparationSlotsNeeded();
 
+      if (options.prepareOnly) {
+        this.logger.info(
+          'Prepare-only mode enabled - skipping outbound email and focusing on backlog replenishment'
+        );
+        sendStillNeeded = false;
+        state.status = 'discovering';
+      }
+
       if (options.forceRun) {
         this.logger.info('Force run enabled - bypassing send/backlog guards for a fresh draft');
         emailSentToday = false;
-        sendStillNeeded = true;
+        if (!options.prepareOnly) {
+          sendStillNeeded = true;
+        }
       }
 
       if (readyPendingDraft && sendStillNeeded) {
@@ -129,6 +142,17 @@ export class WorkflowOrchestrator {
           if (!preparedArtist) {
             await draftOps.delete(readyPendingDraft.id!);
             this.logger.warn(`Discarded draft ${readyPendingDraft.id} because artist was missing`);
+            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+            readyPendingDraft = readyPendingDrafts[0] ?? null;
+            readyPendingCount = readyPendingDrafts.length;
+            continue;
+          }
+
+          if (!this.isDraftEditoriallyReady(readyPendingDraft, preparedArtist.full_name)) {
+            await draftOps.delete(readyPendingDraft.id!);
+            this.logger.warn(
+              `Discarded draft ${readyPendingDraft.id} because the article was not editorially ready`
+            );
             readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
             readyPendingDraft = readyPendingDrafts[0] ?? null;
             readyPendingCount = readyPendingDrafts.length;
@@ -240,6 +264,14 @@ export class WorkflowOrchestrator {
             continue;
           }
 
+          if (!this.isDraftEditoriallyReady(pendingDraft, pendingArtist.full_name)) {
+            await draftOps.delete(pendingDraft.id!);
+            this.logger.warn(
+              `Discarded pending draft ${pendingDraft.id} because the article was not editorially ready`
+            );
+            continue;
+          }
+
           const normalizedPendingArtistName = this.normalizeArtistName(pendingArtist.full_name);
 
           try {
@@ -268,8 +300,9 @@ export class WorkflowOrchestrator {
             );
 
             if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
+              await draftOps.delete(pendingDraft.id!);
               this.logger.warn(
-                `Pending draft ${pendingDraft.id} still lacks enough approval-ready images (${approvalCheck.accepted.length}/${MIN_APPROVAL_IMAGES})`
+                `Discarded pending draft ${pendingDraft.id} because it still lacks enough approval-ready images (${approvalCheck.accepted.length}/${MIN_APPROVAL_IMAGES})`
               );
               continue;
             }
@@ -310,8 +343,9 @@ export class WorkflowOrchestrator {
               pendingDraftError instanceof Error
                 ? pendingDraftError.message
                 : String(pendingDraftError);
+            await draftOps.delete(pendingDraft.id!);
             this.logger.warn(
-              `Failed to hydrate pending draft ${pendingDraft.id}: ${message}`
+              `Discarded pending draft ${pendingDraft.id} after hydration failure: ${message}`
             );
           }
         }
@@ -361,7 +395,9 @@ export class WorkflowOrchestrator {
 
       if (shouldPrepareOnly && preparationSlotsNeeded > 0) {
         this.logger.info(
-          emailSentToday
+          options.prepareOnly
+            ? `Prepare-only mode active, mining ${preparationSlotsNeeded} draft(s) to satisfy backlog (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS}) and daily production (${draftsCreatedToday}/${TARGET_NEW_DRAFTS_PER_DAY})`
+            : emailSentToday
             ? `Email already sent today, preparing ${preparationSlotsNeeded} new draft(s) in the background to satisfy backlog (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS}) and daily production (${draftsCreatedToday}/${TARGET_NEW_DRAFTS_PER_DAY})`
             : `Before ${NORMAL_SEND_HOUR}:00 local time, preparing ${preparationSlotsNeeded} draft(s) without sending to satisfy backlog (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS}) and daily production (${draftsCreatedToday}/${TARGET_NEW_DRAFTS_PER_DAY})`
         );
@@ -376,7 +412,7 @@ export class WorkflowOrchestrator {
 
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
-      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date, blockedArtistNames);
+      verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, blockedArtistNames);
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
 
       const maxDiscoveryAttempts = 12;
@@ -419,7 +455,7 @@ export class WorkflowOrchestrator {
               this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
 
               verifiedArtists = await artistOps.findVerifiedUnpublished();
-              verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, state.date, blockedArtistNames);
+              verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, blockedArtistNames);
 
               if (verifiedArtists.length > 0) {
                 this.logger.info(`✓ Found ${verifiedArtists.length} verified artist(s) after ${discoveryAttempts} attempt(s)`);
@@ -469,6 +505,17 @@ export class WorkflowOrchestrator {
             state.draft_id = synthesisResult.draft.id;
           }
           this.logger.info('Article synthesized', synthesisResult.metadata);
+
+          if (!this.isDraftEditoriallyReady(synthesisResult.draft, selectedArtist.full_name)) {
+            await draftOps.delete(synthesisResult.draft.id!);
+            await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
+            await artistOps.delete(selectedArtist.id!);
+            state.draft_id = undefined;
+            this.logger.warn(
+              `Skipping artist ${selectedArtist.id} because the article did not meet editorial readiness requirements`
+            );
+            continue;
+          }
 
           this.logger.info('Sourcing verified images');
           const artistSources = await sourceOps.findByArtistId(selectedArtist.id!);
@@ -568,9 +615,17 @@ export class WorkflowOrchestrator {
           }
           try {
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
-            await artistOps.delete(selectedArtist.id!);
+            await artistOps.mergeMetadata(selectedArtist.id!, {
+              last_workflow_failure_at: new Date().toISOString(),
+              last_workflow_failure_date: state.date,
+              last_workflow_failure_reason:
+                artistError instanceof Error ? artistError.message : String(artistError),
+            });
           } catch (statusError) {
-            this.logger.warn(`Failed to remove artist ${selectedArtist.id} after workflow error`, statusError);
+            this.logger.warn(
+              `Failed to persist failure metadata for artist ${selectedArtist.id} after workflow error`,
+              statusError
+            );
           }
           this.logger.warn(
             `Skipping artist ${selectedArtist.id} after workflow error`,
@@ -579,7 +634,7 @@ export class WorkflowOrchestrator {
         }
       }
 
-      while (sendStillNeeded) {
+      while (sendStillNeeded || preparationSlotsNeeded > 0) {
         const fallbackDraft = await emergencyFallback.prepareFallbackDraft({
           minImages: MIN_APPROVAL_IMAGES,
           excludedArtistIds: fallbackExcludedArtistIds,
@@ -601,7 +656,14 @@ export class WorkflowOrchestrator {
 
         if (options.dryRun) {
           completed = true;
-          sendStillNeeded = false;
+          if (sendStillNeeded) {
+            sendStillNeeded = false;
+          } else if (preparationSlotsNeeded > 0) {
+            state.prepared_draft = true;
+            readyPendingCount++;
+            draftsCreatedToday++;
+            preparationSlotsNeeded = computePreparationSlotsNeeded();
+          }
           continue;
         }
 
@@ -639,11 +701,14 @@ export class WorkflowOrchestrator {
           }
         } else {
           state.prepared_draft = true;
+          readyPendingCount++;
+          draftsCreatedToday++;
+          preparationSlotsNeeded = computePreparationSlotsNeeded();
           completed = true;
         }
       }
 
-      if (!completed || sendStillNeeded) {
+      if (!completed || sendStillNeeded || preparationSlotsNeeded > 0) {
         throw new Error(`No verified artist produced an approval-ready article with at least ${MIN_APPROVAL_IMAGES} pure artworks`);
       }
 
@@ -726,7 +791,6 @@ export class WorkflowOrchestrator {
   private async filterArtistsWithSources(
     artists: Artist[],
     minSources: number,
-    workflowDate: string,
     blockedArtistNames: Set<string> = new Set<string>()
   ): Promise<Artist[]> {
     if (artists.length === 0) return artists;
@@ -739,7 +803,6 @@ export class WorkflowOrchestrator {
       ...openDraftArtistNames,
     ];
     const externallyPublishedHaystacks = await this.getPublishedBlogHaystacks();
-    const failedArtistNames = await this.getFailedArtistNamesForDate(workflowDate);
     const filtered: Artist[] = [];
 
     for (const artist of artists) {
@@ -774,13 +837,6 @@ export class WorkflowOrchestrator {
         if (this.isArtistPublishedInExternalBlog(artist.full_name, externallyPublishedHaystacks)) {
           this.logger.warn(
             `Skipping artist ${artist.id} (${artist.full_name}) because this artist already appears in the published blog history`
-          );
-          continue;
-        }
-
-        if (failedArtistNames.has(normalizedArtistName)) {
-          this.logger.warn(
-            `Skipping artist ${artist.id} (${artist.full_name}) because this artist already failed image sourcing today`
           );
           continue;
         }
@@ -820,6 +876,7 @@ export class WorkflowOrchestrator {
     const recentSentDrafts = await draftOps.findByStatus('sent');
     const recentPracticeCounts = new Map<string, number>();
     const recentArtistIds = new Set<number>();
+    const sourceQualityScores = new Map<number, number>();
 
     for (const draft of recentSentDrafts.slice(0, 12)) {
       recentArtistIds.add(draft.artist_id);
@@ -828,7 +885,25 @@ export class WorkflowOrchestrator {
       recentPracticeCounts.set(practice, (recentPracticeCounts.get(practice) ?? 0) + 1);
     }
 
+    for (const artist of artists) {
+      if (!artist.id) continue;
+      try {
+        const sources = await sourceOps.findByArtistId(artist.id);
+        sourceQualityScores.set(artist.id, this.getSourceQualityScore(sources.map((source) => source.url)));
+      } catch {
+        sourceQualityScores.set(artist.id, 0);
+      }
+    }
+
     return [...artists].sort((a, b) => {
+      const scoreA = this.getBacklogReadinessScore(a);
+      const scoreB = this.getBacklogReadinessScore(b);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+
+      const sourceScoreA = sourceQualityScores.get(a.id ?? -1) ?? 0;
+      const sourceScoreB = sourceQualityScores.get(b.id ?? -1) ?? 0;
+      if (sourceScoreA !== sourceScoreB) return sourceScoreB - sourceScoreA;
+
       const practiceA = this.normalizePractice(a.visual_practice);
       const practiceB = this.normalizePractice(b.visual_practice);
       const countA = recentPracticeCounts.get(practiceA) ?? 0;
@@ -866,6 +941,63 @@ export class WorkflowOrchestrator {
     return normalized;
   }
 
+  private getBacklogReadinessScore(artist: Artist): number {
+    const practice = this.normalizePractice(artist.visual_practice);
+
+    switch (practice) {
+      case 'pintura':
+      case 'escultura':
+      case 'xilogravura':
+      case 'gravura':
+      case 'ceramica':
+      case 'desenho':
+        return 5;
+      case 'fotografia':
+      case 'performance':
+      case 'instalacao':
+      case 'arte_conceitual':
+        return 1;
+      default:
+        return 3;
+    }
+  }
+
+  private getSourceQualityScore(urls: string[]): number {
+    let score = 0;
+
+    for (const url of urls) {
+      const normalized = url.toLowerCase();
+
+      if (/escritoriodearte\.com\/artista\/[^/]+\/[^/]+/.test(normalized)) {
+        score += 5;
+        continue;
+      }
+
+      if (normalized.includes('escritoriodearte.com/artista/')) {
+        score += 3;
+        continue;
+      }
+
+      if (
+        normalized.includes('itaucultural') ||
+        normalized.includes('pinacoteca') ||
+        normalized.includes('museu') ||
+        normalized.includes('instituto') ||
+        normalized.includes('inhotim')
+      ) {
+        score += 3;
+        continue;
+      }
+
+      if (normalized.includes('dailyartfair.com/artist/')) {
+        score += 1;
+        continue;
+      }
+    }
+
+    return score;
+  }
+
   private async enrichArtistSources(artistId: number): Promise<void> {
     try {
       const scraperBridge = new ScraperBridge();
@@ -885,6 +1017,11 @@ export class WorkflowOrchestrator {
           if (result.success && result.content && result.content.length > 100) {
             await sourceOps.updateContentSummary(source.id!, result.content);
             enriched++;
+            await this.persistDiscoveredSourceLinks(
+              artistId,
+              source.url,
+              result.discovered_urls ?? []
+            );
           }
         } catch (err) {
           this.logger.warn(`Failed to enrich source ${source.id}`, err);
@@ -896,6 +1033,57 @@ export class WorkflowOrchestrator {
       }
     } catch (error) {
       this.logger.warn('Source enrichment failed (non-fatal)', error);
+    }
+  }
+
+  private async persistDiscoveredSourceLinks(
+    artistId: number,
+    parentUrl: string,
+    discoveredUrls: string[]
+  ): Promise<void> {
+    if (discoveredUrls.length === 0) {
+      return;
+    }
+
+    const artist = await artistOps.findById(artistId);
+    if (!artist) {
+      return;
+    }
+
+    const existingSources = await sourceOps.findByArtistId(artistId);
+    const existingUrls = new Set(existingSources.map((source) => source.url));
+    const config = this.ensureConfig();
+    let created = 0;
+
+    for (const candidateUrl of discoveredUrls) {
+      if (created >= 3) {
+        break;
+      }
+
+      if (!this.shouldPersistDiscoveredSource(candidateUrl, parentUrl, artist.full_name)) {
+        continue;
+      }
+
+      if (existingUrls.has(candidateUrl)) {
+        continue;
+      }
+
+      const institution = getInstitutionName(candidateUrl, config.institutions) || 'Discovered Source';
+      const credibility = getInstitutionCredibility(candidateUrl, config.institutions) || 0.72;
+
+      try {
+        await sourceOps.create({
+          artist_id: artistId,
+          url: candidateUrl,
+          institution,
+          credibility_score: Math.max(0.65, credibility),
+          content_summary: '',
+        });
+        existingUrls.add(candidateUrl);
+        created++;
+      } catch {
+        // Unique constraint or transient failure: safe to ignore.
+      }
     }
   }
 
@@ -1007,10 +1195,112 @@ export class WorkflowOrchestrator {
         continue;
       }
 
+      if (!this.isDraftEditoriallyReady(draft, artist?.full_name)) {
+        if (draft.id) {
+          try {
+            await draftOps.delete(draft.id);
+            this.logger.warn(
+              `Deleted stale pending draft ${draft.id} because it was not editorially ready`
+            );
+          } catch (error) {
+            this.logger.warn(`Failed to delete non-ready pending draft ${draft.id}`, error);
+          }
+        }
+        continue;
+      }
+
       validDrafts.push(draft);
     }
 
     return validDrafts;
+  }
+
+  private isDraftEditoriallyReady(
+    draft: { title: string; content: string },
+    artistName?: string
+  ): boolean {
+    const normalizedArtistName = artistName ? this.normalizeArtistName(artistName) : '';
+    const normalizedTitle = this.normalizeArtistName(draft.title ?? '');
+    const words = (draft.content ?? '').split(/\s+/).filter(Boolean).length;
+    const paragraphs = (draft.content ?? '')
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean);
+
+    if (words < MIN_APPROVAL_WORDS) {
+      return false;
+    }
+
+    if (paragraphs.length === 0 || paragraphs.length > MAX_APPROVAL_PARAGRAPHS) {
+      return false;
+    }
+
+    if (normalizedArtistName && !normalizedTitle.includes(normalizedArtistName)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private shouldPersistDiscoveredSource(
+    candidateUrl: string,
+    parentUrl: string,
+    artistName: string
+  ): boolean {
+    try {
+      const candidate = new URL(candidateUrl);
+      const parent = new URL(parentUrl);
+      const normalizedCandidate = this.normalizeArtistName(candidateUrl);
+      const normalizedArtist = this.normalizeArtistName(artistName);
+
+      if (!['http:', 'https:'].includes(candidate.protocol)) {
+        return false;
+      }
+
+      if (this.isSocialLikeUrl(candidateUrl)) {
+        return false;
+      }
+
+      const sameHost = candidate.hostname === parent.hostname;
+      const path = candidate.pathname.toLowerCase();
+      const artistSlug = normalizedArtist.replace(/\s+/g, '-');
+
+      const artistTargeted =
+        normalizedCandidate.includes(normalizedArtist) ||
+        path.includes(artistSlug) ||
+        path.includes('/artista/') ||
+        path.includes('/artist/') ||
+        path.includes('/obras/') ||
+        path.includes('/works/') ||
+        path.includes('/artwork/');
+
+      if (!artistTargeted) {
+        return false;
+      }
+
+      if (!sameHost && getInstitutionCredibility(candidateUrl, this.ensureConfig().institutions) <= 0) {
+        return false;
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isSocialLikeUrl(url: string): boolean {
+    const normalized = url.toLowerCase();
+    return [
+      'instagram.com',
+      'facebook.com',
+      'x.com',
+      'twitter.com',
+      'youtube.com',
+      'youtu.be',
+      'tiktok.com',
+      'pinterest.com',
+      'linkedin.com',
+    ].some((host) => normalized.includes(host));
   }
 
   private async pruneDuplicatePendingDraftsByArtistName<T extends { id?: number; artist_id: number }>(
@@ -1080,6 +1370,26 @@ export class WorkflowOrchestrator {
     return Array.from(variants).filter(Boolean);
   }
 
+  private buildPublicationMatchVariants(name: string): string[] {
+    const normalized = this.normalizeArtistName(name);
+    if (!normalized) {
+      return [];
+    }
+
+    const tokens = normalized.split(' ').filter(Boolean);
+    const variants = new Set<string>([normalized]);
+
+    if (tokens.length >= 2) {
+      variants.add(tokens.slice(-2).join(' '));
+    }
+
+    if (tokens.length >= 3) {
+      variants.add(tokens.slice(-3).join(' '));
+    }
+
+    return Array.from(variants).filter((variant) => variant.length >= 8);
+  }
+
   private isDistinctiveArtistToken(token: string): boolean {
     if (token.length < 7) {
       return false;
@@ -1143,7 +1453,7 @@ export class WorkflowOrchestrator {
       return false;
     }
 
-    const variants = this.buildArtistNameVariants(artistName);
+    const variants = this.buildPublicationMatchVariants(artistName);
     if (variants.length === 0) {
       return false;
     }

@@ -17,7 +17,11 @@ export async function queueRejectedDraftReplacement(draftId: number): Promise<Re
     await draftOps.updateStatus(draftId, 'rejected');
   }
 
-  await artistOps.updateStatus(draft.artist_id, 'published');
+  await artistOps.mergeMetadata(draft.artist_id, {
+    editor_rejected: true,
+    editor_rejected_at: new Date().toISOString(),
+    editor_rejected_draft_id: draftId,
+  });
 
   const logs = await publishingOps.findByDraftId(draftId);
   const existingQueueLog = logs.find((log) => log.error_message === 'replacement_requested');

@@ -1,5 +1,7 @@
 # CASCA Editorial Agent - Project Status
 
+> Historical note: this file reflects an earlier implementation snapshot and is not the primary operational reference anymore. For current behavior, constraints, failure modes, and anti-regression rules, use [docs/SYSTEM_RUNBOOK.md](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/docs/SYSTEM_RUNBOOK.md).
+
 ## ✅ Implementation Complete
 
 All planned features have been implemented according to the design specification.

@@ -34,6 +34,7 @@ import re
 import sys
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -71,7 +72,52 @@ def choose_best_text(chunks: list[str]) -> str:
     return cleaned[0]
 
 
-def result_payload(url: str, title: str, content: str, extractor: str, final_url: str | None = None) -> dict:
+def extract_discovered_urls(base_url: str, html: str, max_links: int = 12) -> list[str]:
+    if not html:
+        return []
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+
+    for match in re.finditer(r'href=["\']([^"\']+)["\']', html, flags=re.IGNORECASE):
+        href = (match.group(1) or "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+
+        absolute = urllib.parse.urljoin(base_url, href)
+        try:
+            parsed = urllib.parse.urlparse(absolute)
+        except Exception:
+            continue
+
+        if parsed.scheme not in ("http", "https"):
+            continue
+
+        normalized = absolute.split("#", 1)[0]
+        lowered = normalized.lower()
+        if any(bad in lowered for bad in ("/contact", "/contato", "/privacy", "/privacidade", "/termos", "/terms")):
+            continue
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        discovered.append(normalized)
+
+        if len(discovered) >= max_links:
+            break
+
+    return discovered
+
+
+def result_payload(
+    url: str,
+    title: str,
+    content: str,
+    extractor: str,
+    final_url: str | None = None,
+    discovered_urls: list[str] | None = None,
+) -> dict:
     return {
         "success": True,
         "url": url,
@@ -80,6 +126,7 @@ def result_payload(url: str, title: str, content: str, extractor: str, final_url
         "content": content,
         "content_length": len(content),
         "extractor": extractor,
+        "discovered_urls": discovered_urls or [],
     }
 
 
@@ -139,10 +186,11 @@ def try_firecrawl(url: str, max_length: int) -> dict | None:
     if len(content) < 200:
         return None
 
-    return result_payload(url, title, content, "firecrawl", final_url)
+    discovered_urls = extract_discovered_urls(final_url, html)
+    return result_payload(url, title, content, "firecrawl", final_url, discovered_urls)
 
 
-def extract_content_from_scrapling(page, max_length: int) -> tuple[str, str]:
+def extract_content_from_scrapling(page, max_length: int) -> tuple[str, str, list[str]]:
     selectors = [
         "article",
         "main",
@@ -172,7 +220,10 @@ def extract_content_from_scrapling(page, max_length: int) -> tuple[str, str]:
     if len(content) < 180:
         content = (page.get_all_text() or "").strip()
 
-    return title, normalize_text(content, max_length)
+    html = getattr(page, "html_content", "") or ""
+    discovered_urls = extract_discovered_urls(getattr(page, "url", ""), html)
+
+    return title, normalize_text(content, max_length), discovered_urls
 
 
 def try_scrapling(url: str, max_length: int) -> dict | None:
@@ -183,20 +234,20 @@ def try_scrapling(url: str, max_length: int) -> dict | None:
 
     try:
         page = Fetcher.get(url, timeout=20)
-        title, content = extract_content_from_scrapling(page, max_length)
+        title, content, discovered_urls = extract_content_from_scrapling(page, max_length)
         if len(content) < 200:
             try:
                 from scrapling import StealthyFetcher
 
                 page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
-                title, content = extract_content_from_scrapling(page, max_length)
+                title, content, discovered_urls = extract_content_from_scrapling(page, max_length)
             except Exception as exc:
                 print(f"[scrapling] stealth fallback failed: {exc}", file=sys.stderr)
 
         if len(content) < 200:
             return None
 
-        return result_payload(url, title, content, "scrapling", getattr(page, "url", url))
+        return result_payload(url, title, content, "scrapling", getattr(page, "url", url), discovered_urls)
     except Exception as exc:
         print(f"[scrapling] failed: {exc}", file=sys.stderr)
         return None
@@ -221,7 +272,7 @@ def try_goose(url: str, max_length: int) -> dict | None:
         content = normalize_text(choose_best_text(candidates), max_length)
         if len(content) < 200:
             return None
-        return result_payload(url, title, content, "goose3", getattr(article, "final_url", url) or url)
+        return result_payload(url, title, content, "goose3", getattr(article, "final_url", url) or url, [])
     except Exception as exc:
         print(f"[goose3] failed: {exc}", file=sys.stderr)
         return None
@@ -273,7 +324,22 @@ async def try_crawl4ai_async(url: str, max_length: int) -> dict | None:
         return None
 
     final_url = getattr(result, "url", "") or url
-    return result_payload(url, title, content, "crawl4ai", final_url)
+    links = getattr(result, "links", None) or {}
+    discovered_urls: list[str] = []
+    if isinstance(links, dict):
+        for bucket in ("internal", "external"):
+            values = links.get(bucket) or []
+            if isinstance(values, list):
+                for value in values:
+                    if isinstance(value, str):
+                        discovered_urls.append(value)
+                    elif isinstance(value, dict) and isinstance(value.get("href"), str):
+                        discovered_urls.append(value["href"])
+
+    if not discovered_urls:
+        discovered_urls = extract_discovered_urls(final_url, getattr(result, "html", "") or "")
+
+    return result_payload(url, title, content, "crawl4ai", final_url, discovered_urls[:12])
 
 
 def try_crawl4ai(url: str, max_length: int) -> dict | None:

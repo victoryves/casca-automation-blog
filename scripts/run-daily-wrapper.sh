@@ -49,26 +49,45 @@ echo $$ > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 log "========================================"
-log "CASCA Editorial Agent - Daily Run"
+log "CASCA Editorial Agent - Continuous Run"
 log "Node: $(node --version) | npm: $(npm --version)"
 log "Timezone: $APP_TIMEZONE"
 log "========================================"
 
-# Persistent retry logic: keep going until an email is sent or one was already sent today.
+# Persistent retry logic:
+# 1. Run the normal workflow to send the daily approval email when needed.
+# 2. Immediately run a prepare-only pass to keep mining the internet and fill the backlog.
 ATTEMPT=0
 RETRY_DELAY=60
 LONG_RETRY_DELAY=300
 
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  log "Attempt $ATTEMPT"
+  log "Attempt $ATTEMPT - normal send workflow"
 
   npm run daily >> "$LOG_FILE" 2>&1
   EXIT_CODE=$?
 
   if [ $EXIT_CODE -eq 0 ]; then
-    log "SUCCESS (attempt $ATTEMPT)"
-    exit 0
+    log "Normal workflow completed (attempt $ATTEMPT)"
+    log "Attempt $ATTEMPT - prepare-only backlog replenishment"
+    npm run daily -- --prepare-only >> "$LOG_FILE" 2>&1
+    PREP_EXIT_CODE=$?
+
+    if [ $PREP_EXIT_CODE -eq 0 ]; then
+      log "Backlog replenishment completed (attempt $ATTEMPT)"
+      exit 0
+    fi
+
+    if [ $PREP_EXIT_CODE -eq 2 ]; then
+      log "Backlog replenishment found no approval-ready artist yet. Continuing in ${RETRY_DELAY}s..."
+      sleep $RETRY_DELAY
+      continue
+    fi
+
+    log "Prepare-only workflow errored. Retrying in ${LONG_RETRY_DELAY}s..."
+    sleep $LONG_RETRY_DELAY
+    continue
   fi
 
   log "FAILED with exit code $EXIT_CODE"

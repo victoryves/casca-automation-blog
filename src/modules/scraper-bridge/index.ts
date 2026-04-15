@@ -77,10 +77,19 @@ export class ScraperBridge {
   async searchImages(
     query: string,
     engine: 'bing' | 'duckduckgo' | 'google' | 'all' = 'all',
-    limit = 5
+    limit = 5,
+    options: {
+      siteFilters?: string[];
+      artworkOnly?: boolean;
+    } = {}
   ): Promise<ImageSearchResult> {
     try {
-      const output = await this.runPython('search_images.py', [query, engine, String(limit)]);
+      const output = await this.runPython('search_images.py', [
+        query,
+        engine,
+        String(limit),
+        JSON.stringify(options),
+      ]);
       const result = JSON.parse(output) as ImageSearchResult;
       return result;
     } catch (error) {

@@ -16,8 +16,8 @@ const IMAGES: Image[] = [
     attribution: 'Escritorio de Arte.',
   },
   {
-    url: 'https://www.escritoriodearte.com/quadro/cicero-dias-mae-e-filha-guache-sobre-papel-24866g.webp',
-    caption: 'Mãe e Filha, gouache on paper.',
+    url: 'https://www.escritoriodearte.com/quadro/cicero-dias-sonhos-liricos-nanquim-e-giz-de-cera-sobre-papel-24864g.webp',
+    caption: 'Sonhos Líricos, ink and wax crayon on paper.',
     attribution: 'Escritorio de Arte.',
   },
   {
@@ -65,11 +65,11 @@ async function ensureSources(artistId: number): Promise<void> {
         'Lembranças by Cícero Dias, oil on canvas.',
     },
     {
-      url: 'https://www.escritoriodearte.com/artista/cicero-dias/mae-e-filha-24866',
+      url: 'https://www.escritoriodearte.com/artista/cicero-dias/sonhos-liricos-24864',
       institution: 'Escritorio de Arte',
       credibility_score: 0.9,
       content_summary:
-        'Mãe e Filha by Cícero Dias, gouache on paper.',
+        'Sonhos Líricos by Cícero Dias, ink and wax crayon on paper.',
     },
     {
       url: 'https://www.escritoriodearte.com/artista/cicero-dias/nu-feminino-com-flores-24865',

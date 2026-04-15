@@ -10,6 +10,7 @@ import { marked } from 'marked';
 import { draftOps, artistOps, sourceOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
 import { PublicationHistoryModule } from '../publication-history/index.js';
+import { VisualModule } from '../visual/index.js';
 import type { Draft, Image, EmailTemplate } from '../../types/index.js';
 
 export interface SendApprovalEmailOptions {
@@ -94,9 +95,33 @@ export class EmailModule {
         );
       }
 
-      if (options.images.length > 0) {
-        console.log(`  Downloading ${options.images.length} images...`);
-        const result = await this.prepareImageAttachments(options.images);
+      const visual = new VisualModule(config.env.geminiApiKey);
+      const approvalCheck = await visual.filterApprovalImages(
+        {
+          full_name: artist.full_name,
+          visual_practice: artist.visual_practice ?? undefined,
+          birthplace_city: artist.birthplace_city ?? undefined,
+          birthplace_state: artist.birthplace_state ?? undefined,
+        },
+        options.images
+      );
+
+      if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
+        const reasons = approvalCheck.rejected
+          .slice(0, 3)
+          .map((item) => item.reason)
+          .filter(Boolean)
+          .join(' | ');
+        throw new Error(
+          `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} approval-ready images${reasons ? `: ${reasons}` : ''}`
+        );
+      }
+
+      const approvalReadyImages = approvalCheck.accepted.slice(0, TARGET_APPROVAL_IMAGES);
+
+      if (approvalReadyImages.length > 0) {
+        console.log(`  Downloading ${approvalReadyImages.length} approval-ready images...`);
+        const result = await this.prepareImageAttachments(approvalReadyImages);
         attachments = result.attachments;
         successfulImages = result.validatedImages;
         preparedImageOptions = result.preparedImageOptions;
@@ -210,13 +235,11 @@ export class EmailModule {
       variants.add(tokens.slice(-2).join(' '));
     }
 
-    for (const token of tokens) {
-      if (this.isDistinctiveArtistToken(token)) {
-        variants.add(token);
-      }
+    if (tokens.length >= 3) {
+      variants.add(tokens.slice(-3).join(' '));
     }
 
-    return Array.from(variants).filter(Boolean);
+    return Array.from(variants).filter((variant) => variant.length >= 8);
   }
 
   private normalizeArtistName(name: string): string {
@@ -226,33 +249,6 @@ export class EmailModule {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
-  }
-
-  private isDistinctiveArtistToken(token: string): boolean {
-    if (token.length < 7) {
-      return false;
-    }
-
-    const commonTokens = new Set([
-      'silva',
-      'santos',
-      'souza',
-      'oliveira',
-      'costa',
-      'almeida',
-      'rodrigues',
-      'ferreira',
-      'pereira',
-      'barbosa',
-      'amorim',
-      'vieira',
-      'andrade',
-      'junior',
-      'neto',
-      'filho',
-    ]);
-
-    return !commonTokens.has(token);
   }
 
   /**

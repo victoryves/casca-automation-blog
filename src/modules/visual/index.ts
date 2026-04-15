@@ -39,7 +39,7 @@ interface VerificationCacheEntry {
 export class VisualModule {
   private readonly imagesDir: string;
   private readonly verificationCachePath: string;
-  private readonly verificationSchemaVersion = 'v3.0';
+  private readonly verificationSchemaVersion = 'v3.3';
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
   private readonly gemini: GeminiClient;
@@ -453,25 +453,26 @@ export class VisualModule {
     queries: string[],
     desiredLimit: number,
     artist: ArtistInfo
-  ): Promise<Array<{ url: string; caption: string; source_page: string }>> {
-    const candidates: Array<{ url: string; caption: string; source_page: string }> = [];
+  ): Promise<Array<{ url: string; caption: string; source_page: string; source_domain?: string }>> {
+    const candidates: Array<{ url: string; caption: string; source_page: string; source_domain?: string }> = [];
     const seen = new Set<string>();
-    const engines: Array<'bing' | 'google'> = ['google', 'bing'];
     const candidateTarget = Math.max(desiredLimit, 6);
-    const minQueriesToTry = Math.min(5, queries.length);
+    const minQueriesToTry = Math.min(6, queries.length);
+    const googleSiteFilters = this.getPreferredGoogleSiteFilters();
 
     for (const [queryIndex, query] of queries.entries()) {
-      for (const engine of engines) {
-        if (queryIndex >= minQueriesToTry && candidates.length >= candidateTarget) break;
+      if (queryIndex >= minQueriesToTry && candidates.length >= candidateTarget) break;
 
-        const remaining = Math.max(candidateTarget - candidates.length, 6);
-        console.log(`  Searching web [${engine}]: "${query}"`);
-        const searchResult = await this.scraperBridge.searchImages(query, engine, remaining);
-        if (!searchResult.success || searchResult.images.length === 0) {
-          continue;
-        }
+      const remaining = Math.max(candidateTarget - candidates.length, 6);
 
-        for (const image of searchResult.images) {
+      console.log(`  Searching web [google-dedicated]: "${query}"`);
+      const googleResult = await this.scraperBridge.searchImages(query, 'google', remaining * 2, {
+        siteFilters: googleSiteFilters,
+        artworkOnly: true,
+      });
+
+      if (googleResult.success && googleResult.images.length > 0) {
+        for (const image of googleResult.images) {
           const normalizedUrl = this.normalizeImageUrl(image.url);
           const key = this.buildArtworkKey(normalizedUrl, image.source_page, image.caption);
           if (seen.has(key)) continue;
@@ -480,16 +481,40 @@ export class VisualModule {
             url: normalizedUrl,
             caption: image.caption,
             source_page: image.source_page,
+            source_domain: image.source_domain,
           });
         }
       }
 
-      if (queryIndex >= minQueriesToTry && candidates.length >= candidateTarget) {
-        break;
+      if (queryIndex < 2 || candidates.length < candidateTarget) {
+        for (const engine of ['bing', 'duckduckgo'] as const) {
+          if (queryIndex >= minQueriesToTry && candidates.length >= candidateTarget) break;
+
+          console.log(`  Searching web [${engine}]: "${query}"`);
+          const searchResult = await this.scraperBridge.searchImages(query, engine, remaining, {
+            artworkOnly: true,
+          });
+          if (!searchResult.success || searchResult.images.length === 0) {
+            continue;
+          }
+
+          for (const image of searchResult.images) {
+            const normalizedUrl = this.normalizeImageUrl(image.url);
+            const key = this.buildArtworkKey(normalizedUrl, image.source_page, image.caption);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            candidates.push({
+              url: normalizedUrl,
+              caption: image.caption,
+              source_page: image.source_page,
+              source_domain: image.source_domain,
+            });
+          }
+        }
       }
     }
 
-    const topLimit = Math.min(candidateTarget, 5);
+    const topLimit = Math.min(candidateTarget, 12);
 
     return candidates
       .sort((a, b) => this.scoreWebCandidate(b, artist) - this.scoreWebCandidate(a, artist))
@@ -501,15 +526,21 @@ export class VisualModule {
     const practice = artist.visual_practice?.trim();
     const stateOrCity = artist.birthplace_state?.trim() || artist.birthplace_city?.trim() || '';
     const queries = [
-      `${artistName} artista`,
-      `${artistName} artwork`,
-      `${artistName} works`,
-      `${artistName} visual aids`,
-      `${artistName} art basel`,
-      `${artistName} obra`,
-      `${artistName} obras`,
-      `${artistName} art`,
-      `${artistName} google arts`,
+      `${artistName} artwork high resolution`,
+      `${artistName} obra alta resolução`,
+      `${artistName} works painting`,
+      `${artistName} obra pintura`,
+      `${artistName} artwork only`,
+      `${artistName} obra sem moldura`,
+      `${artistName} artist artwork`,
+      `${artistName} artista obra`,
+      `${artistName} artes visuais obra`,
+      `${artistName} google arts and culture`,
+      `${artistName} site:artsandculture.google.com`,
+      `${artistName} site:enciclopedia.itaucultural.org.br`,
+      `${artistName} site:dailyartfair.com`,
+      `${artistName} site:mutualart.com`,
+      `${artistName} site:artsy.net`,
       practice ? `${artistName} ${practice} art` : '',
       practice ? `${artistName} ${practice} artwork` : '',
       practice ? `${artistName} ${practice} obra` : '',
@@ -519,6 +550,27 @@ export class VisualModule {
     ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
 
     return queries;
+  }
+
+  private getPreferredGoogleSiteFilters(): string[] {
+    return [
+      'artsandculture.google.com',
+      'enciclopedia.itaucultural.org.br',
+      'itaucultural.org.br',
+      'escritoriodearte.com',
+      'pinacoteca.org.br',
+      'masp.org.br',
+      'museudeartedorio.org.br',
+      'mam.org.br',
+      'mamba.org.br',
+      'museuafrobrasil.org.br',
+      'inhotim.org.br',
+      'ocula.com',
+      'artbasel.com',
+      'visualaids.org',
+      'dailyartfair.com',
+      'mutualart.com',
+    ];
   }
 
   private scoreWebCandidate(
@@ -638,24 +690,30 @@ export class VisualModule {
 
   private isTrustedArtworkWebHost(url: string, sourcePage = ''): boolean {
     const values = [url, sourcePage].filter(Boolean);
+    const trustedHosts = [
+      'artbasel.com',
+      'visualaids.org',
+      'artsandculture.google.com',
+      'ocula.com',
+      'enciclopedia.itaucultural.org.br',
+      'itaucultural.org.br',
+      'masp.org.br',
+      'pinacoteca.org.br',
+      'escritoriodearte.com',
+      'dailyartfair.com',
+      'mutualart.com',
+      'inhotim.org.br',
+      'museudeartedorio.org.br',
+      'mam.org.br',
+      'mamba.org.br',
+      'museuafrobrasil.org.br',
+    ];
 
     for (const value of values) {
       try {
         const parsed = new URL(value);
         const hostname = parsed.hostname.toLowerCase();
         const pathname = parsed.pathname.toLowerCase();
-
-        if (hostname === 'www.artbasel.com' || hostname.endsWith('.artbasel.com')) {
-          return true;
-        }
-
-        if (hostname === 'visualaids.org' || hostname.endsWith('.visualaids.org')) {
-          return true;
-        }
-
-        if (hostname === 'artsandculture.google.com' || hostname.endsWith('.artsandculture.google.com')) {
-          return true;
-        }
 
         if (
           hostname === 'storage.googleapis.com' &&
@@ -671,10 +729,7 @@ export class VisualModule {
           return true;
         }
 
-        if (
-          (hostname === 'ocula.com' || hostname.endsWith('.ocula.com')) &&
-          pathname.includes('/artworks/')
-        ) {
+        if (trustedHosts.some((trustedHost) => hostname === trustedHost || hostname.endsWith(`.${trustedHost}`))) {
           return true;
         }
       } catch {
@@ -1004,6 +1059,20 @@ export class VisualModule {
       'studio shot',
       'still life',
       'tabletop',
+      'table',
+      'desk',
+      'on table',
+      'on a table',
+      'on tabletop',
+      'resting on table',
+      'laid on table',
+      'display table',
+      'wooden table',
+      'mesa',
+      'sobre mesa',
+      'em cima da mesa',
+      'sobre uma mesa',
+      'produto em mesa',
       'capa',
       'cover',
       'catalog',
@@ -1172,6 +1241,15 @@ export class VisualModule {
       'on view',
       'display case',
       'pedestal',
+      'table',
+      'desk',
+      'tabletop',
+      'on table',
+      'on a table',
+      'wooden table',
+      'mesa',
+      'sobre mesa',
+      'em cima da mesa',
       'fernando de noronha',
       'cacimba do padre',
       'laurini',
@@ -1304,6 +1382,17 @@ export class VisualModule {
       'framed',
       'gallery wall',
       'room around the artwork',
+      'tabletop',
+      'on a table',
+      'on table',
+      'desk',
+      'mesa',
+      'sobre mesa',
+      'em cima da mesa',
+      'product page',
+      'product shot',
+      'decor item',
+      'display table',
       'physical object',
       'wooden block',
       'matrix',
@@ -1379,6 +1468,12 @@ export class VisualModule {
       'suitable for an article',
       'high-resolution depiction',
       'clear high-resolution depiction',
+      'clear, high-resolution photograph of a painting',
+      'clear high-resolution photograph of a painting',
+      'clear high-resolution photograph of a drawing',
+      'clear high-resolution image of a painting',
+      'clear high-resolution image of a drawing',
+      'finished artwork',
       'painting',
       'drawing',
       'sculpture',
@@ -2056,7 +2151,7 @@ Return JSON only, no extra text.`,
 
       let allow = isArtwork && confidence >= 0.75;
 
-      if (hasPeople && !photographyMode) {
+      if (hasPeople && !photographyMode && !isArtworkOnly) {
         allow = false;
       }
 
@@ -2087,21 +2182,40 @@ Return JSON only, no extra text.`,
 
       if (
         !allow &&
+        signatureOnlyText &&
         this.reasonSuggestsStandaloneArtwork(reasonText) &&
         !this.isNegativeVerificationReason(parsed.reason ?? '') &&
         !isArtistPhoto &&
         !isInstallationView &&
         !isDocumentaryPhoto &&
         !isLowQuality &&
-        !(hasPeople && !photographyMode) &&
+        !(hasPeople && !photographyMode && !isArtworkOnly)
+      ) {
+        allow = true;
+      }
+
+      if (
+        !allow &&
+        this.reasonSuggestsStandaloneArtwork(reasonText) &&
+        !this.isNegativeVerificationReason(parsed.reason ?? '') &&
+        !isArtistPhoto &&
+        !isInstallationView &&
+        !isDocumentaryPhoto &&
+        !isLowQuality &&
+        !(hasPeople && !photographyMode && !isArtworkOnly) &&
         !(containsTextOverlay && !signatureOnlyText)
       ) {
         allow = true;
       }
 
+      const finalReason =
+        allow && signatureOnlyText
+          ? 'Verified standalone artwork image suitable for publication; any visible markings are intrinsic to the artwork itself.'
+          : parsed.reason || 'Gemini vision verification';
+
       const result = {
         verified: allow,
-        reason: parsed.reason || 'Gemini vision verification',
+        reason: finalReason,
       };
       this.setVerificationCache(cacheKey, result);
       return result;

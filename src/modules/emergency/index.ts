@@ -38,6 +38,130 @@ function articleBody(...paragraphs: string[]): string {
 const EMERGENCY_CANDIDATES: EmergencyCandidate[] = [
   {
     artist: {
+      full_name: 'Jenner Augusto',
+      birthplace_city: 'Aracaju',
+      birthplace_state: 'Sergipe',
+      visual_practice: 'painting, drawing, printmaking, illustration',
+      metadata: {
+        source: 'emergency_fallback_catalog',
+      },
+    },
+    article: {
+      title: 'Jenner Augusto and the Social Landscape of Bahia',
+      subtitle:
+        'From Sergipe to Salvador, Jenner Augusto transformed workers, shorelines, and urban life into a modern painting language of volume, light, and empathy.',
+      content: articleBody(
+        `Jenner Augusto occupies an important place in Brazilian modern art because he joined social feeling to painterly construction without reducing either one. Born in Aracaju in 1924 and later deeply associated with Bahia, he moved through painting, drawing, printmaking, and illustration while building a body of work marked by human density, regional atmosphere, and strong compositional structure. His career connected Sergipe, Salvador, Rio de Janeiro, and international exhibitions, but his work never lost contact with the everyday life of Northeastern Brazil.`,
+        `What stands out in Jenner Augusto is the way landscape and social experience remain intertwined. The biographical material links him to depictions of Alagados, coastal scenes, city views, and popular life, all treated with a modern sensibility that balances geometry and emotion. Even when the forms become simplified, the pictures retain weight and presence. His paintings do not merely record a setting; they reorganize it into a field of color, volume, and rhythm, making place feel lived rather than decorative.`,
+        `The works available here help clarify that range. Marinha shows Jenner's ability to turn the coast into a structured, luminous surface. Serra de Itabaiana reveals how he could monumentalize a regional landscape without losing its atmosphere. Paisagem, preserved through a historical artwork image, points to the broader continuity of his vision: a painting language rooted in land, weather, and human experience, but refined through modern design and disciplined color.`,
+        `Jenner Augusto matters because he helped shape a modern visual identity for Bahia and the Northeast that was neither provincial nor detached from local life. His work demonstrates that regional subject matter can sustain ambitious formal invention, and that painting can carry both social memory and compositional intelligence at once. Looking at Jenner today, one sees an artist who understood how to make landscape and people resonate within the same durable image.`
+      ),
+    },
+    images: [
+      {
+        url: 'https://www.escritoriodearte.com/quadro/jenner-augusto-marinha-oleo-sobre-tela-26427g.webp',
+        caption: 'Marinha, oil on canvas',
+        attribution: 'Escritorio de Arte',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/quadro/jenner-augusto-serra-de-itabaiana-oleo-sobre-tela-26393g.webp',
+        caption: 'Serra de Itabaiana, oil on canvas',
+        attribution: 'Escritorio de Arte',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/quadro/jenner-augusto-paisagem-oleo-sobre-tela-23376g.webp',
+        caption: 'Paisagem, oil on canvas',
+        attribution: 'Escritorio de Arte',
+      },
+    ],
+    sources: [
+      {
+        url: 'https://www.escritoriodearte.com/artista/jenner-augusto',
+        institution: 'Escritorio de Arte',
+        credibility_score: 0.9,
+        content_summary:
+          'Biographical page for Jenner Augusto describing his trajectory from Sergipe to Bahia, his work as painter, illustrator, printmaker, and his connection to landscapes, Alagados, and modern Bahian art.',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/artista/jenner-augusto/marinha-26427',
+        institution: 'Escritorio de Arte',
+        credibility_score: 0.9,
+        content_summary:
+          'Artwork listing for Marinha, an oil on canvas by Jenner Augusto.',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/artista/jenner-augusto/serra-de-itabaiana-26393',
+        institution: 'Escritorio de Arte',
+        credibility_score: 0.9,
+        content_summary:
+          'Artwork listing for Serra de Itabaiana, an oil on canvas by Jenner Augusto.',
+      },
+    ],
+  },
+  {
+    artist: {
+      full_name: 'Antônio Bandeira',
+      birthplace_city: 'Fortaleza',
+      birthplace_state: 'Ceará',
+      visual_practice: 'painting, drawing, printmaking',
+      metadata: {
+        source: 'emergency_fallback_catalog',
+      },
+    },
+    article: {
+      title: 'Antônio Bandeira and the Electric Weather of Brazilian Abstraction',
+      subtitle:
+        'From Fortaleza to Paris, Bandeira turned cities, forests, and pure sensation into one of the most lyrical painting languages of modern Brazil.',
+      content: articleBody(
+        `Antônio Bandeira remains one of the essential figures of Brazilian modernism because he made painting feel simultaneously atmospheric and structural. Born in Fortaleza in 1922, he moved from early figurative work toward a dazzling abstract language shaped by luminous color, nervous line, and a deep sensitivity to rhythm. His career unfolded between Ceará, Rio de Janeiro, and Paris, and that circulation mattered: Bandeira absorbed international debates around lyrical abstraction without ever flattening his work into imitation. Even at its most nonfigurative, his painting keeps the pulse of landscape, weather, city, and memory.`,
+        `What makes Bandeira so compelling is the way he lets form hover between recognition and dissolution. In works tied to cities, forests, and mineral surfaces, the image never settles into a closed description. Instead, color seems to flicker into fragments, as if the canvas were registering light in motion rather than a fixed scene. That quality helps explain why he became such a singular colorist. His paintings do not simply depict atmosphere; they behave like atmosphere. Space opens through streaks, stains, bursts, and chromatic vibration, producing pictures that feel alive with movement even when they remain internally disciplined.`,
+        `The available works gathered here make that range visible. Cidade condenses urban experience into a mesh of glowing marks and architectural tension. Floresta de Carnaúba shows how Bandeira could transform a regional landscape into something almost cosmic without losing its rootedness. Ferro, meanwhile, demonstrates the strength of his later abstraction, where material sensation and compositional control push against each other with remarkable energy. Across these works, his gift is clear: he can suggest place, structure, and emotion without locking the viewer into a single reading.`,
+        `Bandeira's importance goes beyond being an early abstract painter from Ceará. He proved that Brazilian abstraction could be sensuous, local, and internationally ambitious at once. His work moves between lyricism and construction, between memory of the visible world and the freedom of painterly invention. That tension gives his paintings their lasting force. Looking at Antônio Bandeira today, one sees not a footnote to European modernism, but a painter who turned color and gesture into a language unmistakably his own.`
+      ),
+    },
+    images: [
+      {
+        url: 'https://mais.opovo.com.br/_midias/jpg/2022/05/18/750x500/1_01__crepusculo__iab_0215___ano_1966-18776661.jpg',
+        caption: 'Crepúsculo, mixed technique on canvas, 1966',
+        attribution: 'O POVO+',
+      },
+      {
+        url: 'https://mais.opovo.com.br/_midias/jpg/2022/05/18/04__floresta_de_carnauba_iab__1007-18776681.jpg',
+        caption: 'Floresta de Carnaúba, oil on canvas, 1951',
+        attribution: 'O POVO+',
+      },
+      {
+        url: 'https://mais.opovo.com.br/_midias/jpg/2022/05/18/750x500/1_05__ferro_iab__1003-18776686.jpg',
+        caption: 'Ferro, oil on canvas, 1961',
+        attribution: 'O POVO+',
+      },
+    ],
+    sources: [
+      {
+        url: 'https://mais.opovo.com.br/reportagens-especiais/2022/05/23/centenario-de-antonio-bandeira-um-artista-do-ceara-e-do-mundo.html',
+        institution: 'O POVO+',
+        credibility_score: 0.92,
+        content_summary:
+          'Long-form centenary feature on Antônio Bandeira with biographical context, critical essays, and multiple reproduced artworks including Crepúsculo, Floresta de Carnaúba, Samba na Roça, and Ferro.',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/artista/antonio-bandeira/cidade-18260',
+        institution: 'Escritorio de Arte',
+        credibility_score: 0.9,
+        content_summary:
+          'Artwork listing for Cidade, an oil on canvas by Antônio Bandeira, reinforcing his abstract urban vocabulary and market-documented oeuvre.',
+      },
+      {
+        url: 'https://www.escritoriodearte.com/artista/antonio-bandeira/sem-titulo-9095',
+        institution: 'Escritorio de Arte',
+        credibility_score: 0.9,
+        content_summary:
+          'Artwork listing for Sem Título, an oil on canvas by Antônio Bandeira, documenting another example of his lyrical abstraction.',
+      },
+    ],
+  },
+  {
+    artist: {
       full_name: 'Emanoel Araujo',
       birthplace_city: 'Santo Amaro da Purificacao',
       birthplace_state: 'Bahia',
@@ -169,123 +293,70 @@ const EMERGENCY_CANDIDATES: EmergencyCandidate[] = [
   },
   {
     artist: {
-      full_name: 'Cícero Dias',
-      birthplace_city: 'Escada',
-      birthplace_state: 'Pernambuco',
-      visual_practice: 'painting',
+      full_name: 'Aldemir Martins',
+      birthplace_city: 'Ingazeiras',
+      birthplace_state: 'Ceará',
+      visual_practice: 'painting, drawing, printmaking',
       metadata: {
         source: 'emergency_fallback_catalog',
       },
     },
     article: {
-      title: 'Cícero Dias and the Dreamlike Memory of Pernambuco',
+      title: 'Aldemir Martins and the Animal Grammar of Brazilian Modernism',
       subtitle:
-        'A modernist from Escada who carried sugarcane landscapes, erotic freedom, and lyrical invention from Pernambuco into the center of Brazilian art.',
+        'From Ceará to the center of Brazilian visual culture, Aldemir Martins turned cats, birds, flowers, and fruits into a vivid language of contour and color.',
       content: articleBody(
-        `Cícero Dias remains one of the key artists for understanding how Brazilian modernism could be both regional and radically open. Born in Escada, Pernambuco, in 1907, he transformed the remembered world of the sugar zone into a pictorial field full of sensuality, spatial drift, and imaginative freedom. What makes his work so striking is that memory never appears as static recollection. In his hands, childhood landscapes, bodies, plants, houses, and fragments of daily life are reorganized into fluid, dreamlike structures that feel suspended between autobiography and invention.`,
-        `The biographical sources associated with this article place Dias at the center of several decisive artistic movements. He became linked to modernist circles early on, collaborated with the Revista de Antropofagia, and built a career that moved through Recife, Rio de Janeiro, Lisbon, and Paris. That trajectory matters because it shows how Pernambuco was not simply the origin he later left behind. It remained a visual and emotional reservoir that continued to feed the work even as his practice entered broader international conversations. The result is an art that never loses the heat of place, even when it grows more lyrical and formally adventurous.`,
-        `The documented works Lembranças, Mãe e Filha, and Nu Feminino Com Flores help clarify the range of his language. The first title already points toward one of the deepest motors in Dias's work: remembrance as pictorial method. But these are not sentimental souvenirs. His figures and scenes feel airy, unstable, and unexpectedly free, as if memory itself were painting through association instead of chronology. Even when the image is intimate, there is a sense of expansion. Color opens the surface, line loosens description, and bodies become part of a broader emotional climate rather than isolated motifs.`,
-        `What gives Cícero Dias lasting importance is this ability to make Northeastern experience legible within a modern idiom without flattening it into folklore. He did not abandon Pernambuco to become modern; he carried Pernambuco into modern art as a source of rhythm, image, and psychic space. That is why his work continues to resonate. It offers a version of Brazilian painting in which place is not a limit but a generative force, and in which memory becomes an engine for formal invention rather than a retreat into the past.`
+        `Aldemir Martins built one of the most immediately recognizable bodies of work in modern Brazilian art because he understood how repetition can become invention rather than formula. Born in Ingazeiras, Ceará, in 1922, he transformed familiar motifs such as cats, roosters, fish, flowers, and still lifes into a visual language of tensile line, flattened volume, and saturated chromatic force. His art is popular without being simplistic, graphic without becoming cold, and modern without severing itself from lived experience. That balance is one reason his work still circulates so powerfully across audiences of very different backgrounds.`,
+        `What distinguishes Martins is the way he compresses observation into emblem. He does not describe the world in a naturalistic way; he distills it until the image reaches maximum clarity. A flower becomes an explosion of silhouette and hue. A bowl of fruit becomes a concentrated theater of curves, density, and balance. Even untitled works tend to preserve this same economy. He was able to reduce without emptying, stylize without thinning out emotion, and simplify form while making the picture feel more alive rather than less. That is the core of his achievement.`,
+        `The works documented here make that language especially visible. The watercolor listed as Sem Título shows how spare means can still produce tension, lyricism, and formal bite. Flor demonstrates Martins's command of decorative structure, where color blocks and contour lock together with extraordinary precision. Frutas reveals another dimension of his sensibility: the transformation of ordinary still-life material into a charged visual field built from rhythm and compression rather than illusionistic depth. Across these works, the same artistic intelligence is clear. He makes the image legible at once, but never exhausted at first glance.`,
+        `Aldemir Martins remains important because he proved that a distinctly Brazilian modernism could be bold, accessible, and formally rigorous at the same time. He did not need obscurity to achieve complexity. Instead, he relied on structure, contour, and color to produce images that enter memory quickly and stay there. Looking at his work, one sees an artist who knew exactly how far simplification could go before it stopped being alive, and who kept every line under pressure until it carried both visual pleasure and durable identity.`
       ),
     },
     images: [
       {
-        url: 'https://www.escritoriodearte.com/quadro/cicero-dias-lembrancas-oleo-sobre-tela-24867g.webp',
-        caption: 'Lembranças',
+        url: 'https://www.escritoriodearte.com/quadro/aldemir-martins-sem-titulo-aquarela-sobre-papel-26355g.webp',
+        caption: 'Sem Título, watercolor on paper',
         attribution: 'Escritorio de Arte',
       },
       {
-        url: 'https://www.escritoriodearte.com/quadro/cicero-dias-mae-e-filha-guache-sobre-papel-24866g.webp',
-        caption: 'Mãe e Filha',
+        url: 'https://www.escritoriodearte.com/quadro/aldemir-martins-flor-serigrafia-26352g.webp',
+        caption: 'Flor, serigraph',
         attribution: 'Escritorio de Arte',
       },
       {
-        url: 'https://www.escritoriodearte.com/quadro/cicero-dias-nu-feminino-com-flores-guache-sobre-papel-24865g.webp',
-        caption: 'Nu Feminino Com Flores',
+        url: 'https://www.escritoriodearte.com/quadro/aldemir-martins-frutas-serigrafia-26350g.webp',
+        caption: 'Frutas, serigraph',
         attribution: 'Escritorio de Arte',
       },
     ],
     sources: [
       {
-        url: 'https://www.escritoriodearte.com/artista/cicero-dias',
+        url: 'https://www.escritoriodearte.com/artista/aldemir-martins',
         institution: 'Escritorio de Arte',
         credibility_score: 0.9,
         content_summary:
-          'Cícero Dias (Escada, Pernambuco, 1907 - Paris, 2003) was a painter, printmaker, draftsman, illustrator, set designer, and teacher, recognized as a central figure in Brazilian modern art. He collaborated with the Revista de Antropofagia, exhibited the landmark panel Eu Vi o Mundo, worked between Recife, Rio, Lisbon, and Paris, and developed both figurative and lyrical abstract phases tied to Northeastern memory and color.',
+          'Biographical and market overview for Aldemir Martins, the artist from Ceará widely recognized for his modern Brazilian paintings, drawings, and prints centered on animals, flowers, fruits, and graphic stylization.',
       },
       {
-        url: 'https://www.escritoriodearte.com/artista/cicero-dias/lembrancas-24867',
-        institution: 'Escritorio de Arte',
-        credibility_score: 0.9,
-        content_summary: 'Lembranças by Cícero Dias, oil on canvas.',
-      },
-      {
-        url: 'https://www.escritoriodearte.com/artista/cicero-dias/mae-e-filha-24866',
-        institution: 'Escritorio de Arte',
-        credibility_score: 0.9,
-        content_summary: 'Mãe e Filha by Cícero Dias, gouache on paper.',
-      },
-    ],
-  },
-  {
-    artist: {
-      full_name: 'Reynaldo Fonseca',
-      birthplace_city: 'Recife',
-      birthplace_state: 'Pernambuco',
-      visual_practice: 'painting',
-      metadata: {
-        source: 'emergency_fallback_catalog',
-      },
-    },
-    article: {
-      title: 'Reynaldo Fonseca and the Quiet Strange of Brazilian Figuration',
-      subtitle:
-        'A painter from Recife whose dreamlike domestic scenes turned ordinary life into one of the most singular figurative worlds in Pernambuco art.',
-      content: articleBody(
-        `Reynaldo Fonseca's painting proves that figuration can be quietly unsettling without ever becoming theatrical. Born in Recife in 1925, he developed a body of work in which interiors, families, women, fruits, gestures, and everyday situations seem to hover between tenderness and estrangement. At first glance the paintings can appear calm, even courteous. But the longer one looks, the more they reveal an unusual psychological charge. Proportion shifts, silence thickens, and the ordinary begins to feel slightly suspended. That ability to disturb softly, rather than dramatically, is central to Fonseca's achievement.`,
-        `The available biographical material places him within a strong lineage of Pernambuco art. He studied at the Escola de Belas Artes de Pernambuco, worked with Lula Cardoso Ayres, later studied with Candido Portinari in Rio de Janeiro, helped found the Sociedade de Arte Moderna do Recife, and taught drawing at the Federal University of Pernambuco. These details matter because they show a painter who was fully inside the institutional and intellectual development of modern art in the region, not a marginal eccentric working in isolation. Yet despite that grounding, Fonseca's work never reads as academic. It keeps a private, idiosyncratic atmosphere all its own.`,
-        `The artworks documented here suggest some of the breadth of that sensibility. Figura Feminina condenses his attention to posture, stillness, and the emotional ambiguity of the human presence. Cortando o Cabelo turns a simple action into something theatrical without grand gestures, as if ritual had quietly entered domestic space. Cesta de Frutas, meanwhile, shows how even still life in Fonseca's hands can feel charged by arrangement, pause, and an almost narrative tension. He was not interested in mere description. He used figurative motifs as thresholds into mood, memory, and subtle dislocation.`,
-        `That is why Reynaldo Fonseca remains such an important name in the visual history of Pernambuco. His paintings do not shout, but they linger. They create a world where intimacy and unease coexist, where drawing is precise but never dry, and where the familiar becomes newly strange without losing warmth. In an art history often organized around louder ruptures, Fonseca offers another kind of modernity: one built through atmosphere, ambiguity, and the patient transformation of daily life into enduring image.`
-      ),
-    },
-    images: [
-      {
-        url: 'https://www.escritoriodearte.com/quadro/reynaldo-fonseca-figura-feminina-oleo-sobre-cartao-pincel-seco-19379g.webp',
-        caption: 'Figura Feminina',
-        attribution: 'Escritorio de Arte',
-      },
-      {
-        url: 'https://www.escritoriodearte.com/quadro/reynaldo-fonseca-cortando-o-cabelo-oleo-sobre-tela-1766g.webp',
-        caption: 'Cortando o Cabelo',
-        attribution: 'Escritorio de Arte',
-      },
-      {
-        url: 'https://www.escritoriodearte.com/quadro/reynaldo-fonseca-cesta-de-frutas-oleo-sobre-tela-1192g.webp',
-        caption: 'Cesta de Frutas',
-        attribution: 'Escritorio de Arte',
-      },
-    ],
-    sources: [
-      {
-        url: 'https://www.escritoriodearte.com/artista/reynaldo-fonseca',
+        url: 'https://www.escritoriodearte.com/artista/aldemir-martins/sem-titulo-26355',
         institution: 'Escritorio de Arte',
         credibility_score: 0.9,
         content_summary:
-          'Reynaldo Fonseca (Recife PE 1925 - 2019) was a painter, muralist, and illustrator. He attended the Escola de Belas Artes de Pernambuco, studied with Lula Cardoso Ayres and later with Candido Portinari in Rio de Janeiro, helped found the Sociedade de Arte Moderna do Recife, taught drawing at UFPE, and became known for figurative paintings marked by dreamlike, uncanny family scenes and refined draftsmanship.',
+          'Artwork listing for an untitled watercolor on paper by Aldemir Martins.',
       },
       {
-        url: 'https://www.escritoriodearte.com/artista/reynaldo-fonseca/figura-feminina-19379',
+        url: 'https://www.escritoriodearte.com/artista/aldemir-martins/flor-26352',
         institution: 'Escritorio de Arte',
         credibility_score: 0.9,
         content_summary:
-          'Figura Feminina by Reynaldo Fonseca, oil on board with dry brush, dated 1980, measuring 49 x 34 cm.',
+          'Artwork listing for Flor, a serigraph by Aldemir Martins.',
       },
       {
-        url: 'https://www.escritoriodearte.com/artista/reynaldo-fonseca/cortando-o-cabelo-1766',
+        url: 'https://www.escritoriodearte.com/artista/aldemir-martins/frutas-26350',
         institution: 'Escritorio de Arte',
         credibility_score: 0.9,
         content_summary:
-          'Cortando o Cabelo by Reynaldo Fonseca, oil on canvas, dated 2007, measuring 70 x 50 cm.',
+          'Artwork listing for Frutas, a serigraph by Aldemir Martins.',
       },
     ],
   },

@@ -15,6 +15,19 @@ function normalizeArtistName(name: string): string {
 }
 
 export const artistOps = {
+  parseMetadata(artist: Pick<Artist, 'metadata'> | null | undefined): Record<string, unknown> {
+    if (!artist?.metadata) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(artist.metadata);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  },
+
   async findByNormalizedName(fullName: string): Promise<Artist | null> {
     const normalizedTarget = normalizeArtistName(fullName);
     if (!normalizedTarget) {
@@ -142,6 +155,15 @@ export const artistOps = {
       metadata ? JSON.stringify(metadata) : null,
       id,
     ]);
+  },
+
+  async mergeMetadata(id: number, patch: Record<string, unknown>): Promise<void> {
+    const artist = await this.findById(id);
+    const current = this.parseMetadata(artist);
+    await this.updateMetadata(id, {
+      ...current,
+      ...patch,
+    });
   },
 
   /**
