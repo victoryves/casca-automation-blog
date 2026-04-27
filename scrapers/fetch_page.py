@@ -43,8 +43,28 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 
+BOILERPLATE_PATTERNS = [
+    r"(?im)^\s*skip to main content\s*$",
+    r"(?im)^\s*get the app,?.*$",
+    r"(?im)^\s*login\s*$",
+    r"(?im)^\s*log in\s*$",
+    r"(?im)^\s*join us\s*$",
+    r"(?im)^\s*join us for free login\s*$",
+    r"(?im)^\s*forgot your password\?\s*$",
+    r"(?im)^\s*keep me logged in\s*$",
+    r"(?im)^\s*not a member yet\?\s*$",
+    r"(?im)^\s*artists recommendation.*$",
+    r"(?im)^\s*main content\s*$",
+    r"(?im)^\s*buy\s*$",
+    r"(?im)^\s*artworks\s*$",
+    r"(?im)^\s*galleries\s*$",
+    r"(?im)^\s*shows\s*$",
+    r"(?im)^\s*artists\s*$",
+]
+
 
 def normalize_text(value: str, max_length: int) -> str:
+    value = strip_boilerplate_text(value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = value.strip()
@@ -62,6 +82,20 @@ def strip_html(value: str) -> str:
     value = re.sub(r"&quot;", '"', value)
     value = re.sub(r"&#39;", "'", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def strip_boilerplate_text(value: str) -> str:
+    if not value:
+        return ""
+
+    for pattern in BOILERPLATE_PATTERNS:
+        value = re.sub(pattern, " ", value)
+
+    value = re.sub(r"(?is)\bget the app\b.*?(?=\n\n|$)", " ", value)
+    value = re.sub(r"(?is)\bskip to main content\b.*?(?=\n\n|$)", " ", value)
+    value = re.sub(r"(?is)\bfrom artsy, the record highlights:\b.*$", " ", value)
+    value = re.sub(r"(?is)\bdailyartfair\.com\b.*$", " ", value)
+    return value
 
 
 def choose_best_text(chunks: list[str]) -> str:
@@ -145,25 +179,33 @@ def try_firecrawl(url: str, max_length: int) -> dict | None:
             "timeout": 30000,
         }
     ).encode("utf-8")
-    req = urllib.request.Request(
+    endpoints = [
+        "https://api.firecrawl.dev/v2/scrape",
         "https://api.firecrawl.dev/v1/scrape",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT,
-        },
-        method="POST",
-    )
+    ]
+    raw = None
+    for endpoint in endpoints:
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            method="POST",
+        )
 
-    try:
-        with urllib.request.urlopen(req, timeout=35) as response:
-            raw = response.read().decode("utf-8", "ignore")
-    except urllib.error.HTTPError as exc:
-        print(f"[firecrawl] HTTP {exc.code}", file=sys.stderr)
-        return None
-    except Exception as exc:
-        print(f"[firecrawl] failed: {exc}", file=sys.stderr)
+        try:
+            with urllib.request.urlopen(req, timeout=35) as response:
+                raw = response.read().decode("utf-8", "ignore")
+                break
+        except urllib.error.HTTPError as exc:
+            print(f"[firecrawl] HTTP {exc.code} via {endpoint}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[firecrawl] failed via {endpoint}: {exc}", file=sys.stderr)
+
+    if raw is None:
         return None
 
     try:

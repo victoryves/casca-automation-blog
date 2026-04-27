@@ -33,6 +33,7 @@ export interface EnvConfig {
   resendApiKey: string;
   tavilyApiKey: string;
   wikimediaApiKey?: string;
+  serpApiKey?: string;
 
   // Email
   approvalEmail: string;
@@ -79,6 +80,7 @@ function loadEnvConfig(): EnvConfig {
     resendApiKey: process.env.RESEND_API_KEY!,
     tavilyApiKey: process.env.TAVILY_API_KEY!,
     wikimediaApiKey: process.env.WIKIMEDIA_API_KEY,
+    serpApiKey: process.env.SERPAPI_API_KEY,
     approvalEmail: process.env.APPROVAL_EMAIL!,
     fromEmail: process.env.FROM_EMAIL!,
     mediumImportEmail: process.env.MEDIUM_IMPORT_EMAIL,

@@ -79,12 +79,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       );
     }
 
+    if (replacement.blockedByDailyCap) {
+      triggerReplacementAttemptDetached({ preferSend: false });
+      return res.status(200).send(
+        page(
+          result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
+          'This article was rejected successfully. An urgent replacement is being prepared in the background and will be sent as soon as it is ready.'
+        )
+      );
+    }
+
     triggerReplacementAttemptDetached({ preferSend: true });
 
     return res.status(200).send(
       page(
         result.alreadyRejected || alreadyRejected ? 'Already Rejected' : 'Rejected',
-        'This article was rejected successfully. No ready replacement was available instantly, so a priority replacement run has been triggered in the background.'
+        'This article was rejected successfully. No ready replacement was available instantly, so a priority replacement run has been triggered in the background and will send the next article immediately when it becomes ready.'
       )
     );
   } catch (error) {
@@ -98,7 +108,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
 async function sendImmediateReplacement(
   rejectedDraftId: number
-): Promise<{ sent: boolean; draftId?: number; artistName?: string }> {
+): Promise<{ sent: boolean; blockedByDailyCap?: boolean; draftId?: number; artistName?: string }> {
   const config = getConfig();
   const email = new EmailModule(config.env.resendApiKey);
   const emergencyFallback = new EmergencyFallbackModule();
@@ -122,10 +132,42 @@ async function sendImmediateReplacement(
       continue;
     }
 
+     const artistMetadata = artistOps.parseMetadata(artist);
+     if (artistMetadata.editor_rejected) {
+       await draftOps.delete(pendingDraft.id);
+       excludedArtistIds.add(pendingDraft.artist_id);
+       continue;
+     }
+
+    const assessment = await email.assessDraftSendability({
+      draftId: pendingDraft.id,
+      images: pendingDraft.parsedImages,
+      bypassDailyCap: true,
+    });
+    if (!assessment.sendable) {
+      const message = assessment.reason ?? 'unknown immediate replacement failure';
+      console.warn(
+        `Immediate replacement preflight failed for pending draft ${pendingDraft.id}: ${message}`
+      );
+
+      if (isDiscardableImmediateSendError(message)) {
+        await draftOps.delete(pendingDraft.id);
+        excludedArtistIds.add(pendingDraft.artist_id);
+        continue;
+      }
+
+      if (isDailyCapSendError(message)) {
+        return { sent: false, blockedByDailyCap: true };
+      }
+
+      continue;
+    }
+
     try {
       await email.sendApprovalEmail({
         draftId: pendingDraft.id,
-        images: pendingDraft.parsedImages,
+        images: assessment.approvalReadyImages,
+        bypassDailyCap: true,
       });
 
       return {
@@ -138,6 +180,10 @@ async function sendImmediateReplacement(
       console.warn(
         `Immediate replacement send failed for pending draft ${pendingDraft.id}: ${message}`
       );
+
+      if (isDailyCapSendError(message)) {
+        return { sent: false, blockedByDailyCap: true };
+      }
 
       if (isDiscardableImmediateSendError(message)) {
         await draftOps.delete(pendingDraft.id);
@@ -163,6 +209,7 @@ async function sendImmediateReplacement(
       await email.sendApprovalEmail({
         draftId: fallback.draftId,
         images: fallback.images,
+        bypassDailyCap: true,
       });
 
       return {
@@ -175,6 +222,11 @@ async function sendImmediateReplacement(
       console.warn(
         `Immediate emergency replacement send failed for draft ${fallback.draftId}: ${message}`
       );
+
+      if (isDailyCapSendError(message)) {
+        return { sent: false, blockedByDailyCap: true };
+      }
+
       excludedArtistIds.add(fallback.artistId);
       await draftOps.updateStatus(fallback.draftId, 'rejected');
 
@@ -187,6 +239,10 @@ async function sendImmediateReplacement(
   return { sent: false };
 }
 
+function isDailyCapSendError(message: string): boolean {
+  return message.toLowerCase().includes('daily hard cap');
+}
+
 function isDiscardableImmediateSendError(message: string): boolean {
   return [
     'validated images',
@@ -194,21 +250,24 @@ function isDiscardableImmediateSendError(message: string): boolean {
     'duplicate approval email',
     'already-published artist',
     'already in sent status',
+    'editor-rejected artist',
+    'rejected draft',
   ].some((fragment) => message.includes(fragment));
 }
 
 function triggerReplacementAttemptDetached(options: { preferSend: boolean }): void {
   try {
     const command = options.preferSend
-      ? 'mkdir -p logs && ' +
-        '((npx tsx scripts/run-daily.ts --wait-for-lock --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
-        'npx tsx scripts/run-daily.ts --wait-for-lock --force >> logs/webhook-replacements.log 2>&1) && ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
-        'npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1))'
-      : 'mkdir -p logs && ' +
-        '((npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --skip-discovery >> logs/webhook-replacements.log 2>&1 || ' +
-        'npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1) && ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true))';
+      ? 'mkdir -p logs && (' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --force >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --cache-only >> logs/webhook-replacements.log 2>&1 || true)' +
+        ')'
+      : 'mkdir -p logs && (' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --cache-only >> logs/webhook-replacements.log 2>&1 || true)' +
+        ')';
 
     const child = spawn('/bin/zsh', ['-lc', command], {
       cwd: process.cwd(),

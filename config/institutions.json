@@ -157,6 +157,12 @@
       "country": "International"
     },
     {
+      "domain": "escritoriodearte.com",
+      "name": "Escritorio de Arte",
+      "credibility_score": 0.9,
+      "country": "Brazil"
+    },
+    {
       "domain": "wikidata.org",
       "name": "Wikidata",
       "credibility_score": 0.7,
@@ -309,7 +315,7 @@
     {
       "domain": "artsy.net",
       "name": "Artsy",
-      "credibility_score": 0.8,
+      "credibility_score": 0.6,
       "country": "International"
     },
     {

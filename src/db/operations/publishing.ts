@@ -59,6 +59,31 @@ export const publishingOps = {
     return (row?.count ?? 0) > 0;
   },
 
+  async publishedOnDate(workflowDate: string, timeZone = 'UTC'): Promise<boolean> {
+    const rows = query.all<{ published_at: string | null }>(
+      `SELECT published_at
+       FROM publishing_log
+       WHERE medium_url IS NOT NULL AND published_at IS NOT NULL
+       ORDER BY published_at DESC`
+    );
+
+    return rows.some((row) => {
+      if (!row.published_at) return false;
+      const normalized =
+        /z$/i.test(row.published_at) || /[+-]\d{2}:\d{2}$/.test(row.published_at)
+          ? row.published_at
+          : `${row.published_at}Z`;
+      const date = new Date(normalized);
+      const formatted = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(date);
+      return formatted === workflowDate;
+    });
+  },
+
   /**
    * Get all failed publishing attempts
    */

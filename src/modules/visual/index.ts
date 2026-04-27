@@ -19,6 +19,13 @@ interface ArtistInfo {
   visual_practice?: string;
   birthplace_city?: string;
   birthplace_state?: string;
+  artwork_candidates?: Array<{
+    pageUrl: string;
+    imageUrl?: string;
+    title?: string;
+    sourceDomain?: string;
+    confidence?: number;
+  }>;
 }
 
 interface DirectImageCandidate {
@@ -39,7 +46,7 @@ interface VerificationCacheEntry {
 export class VisualModule {
   private readonly imagesDir: string;
   private readonly verificationCachePath: string;
-  private readonly verificationSchemaVersion = 'v3.3';
+  private readonly verificationSchemaVersion = 'v3.4';
   private readonly wikimediaApiBase = 'https://commons.wikimedia.org/w/api.php';
   private readonly scraperBridge: ScraperBridge;
   private readonly gemini: GeminiClient;
@@ -64,7 +71,10 @@ export class VisualModule {
 
     for (const image of images) {
       const verification = await this.verifyImageWithClaude(image.url, artist);
-      if (verification.verified && !this.isNegativeVerificationReason(verification.reason)) {
+      if (
+        (verification.verified && !this.isNegativeVerificationReason(verification.reason)) ||
+        this.shouldRecoverPositiveArtworkVerification(verification.reason)
+      ) {
         accepted.push(image);
       } else {
         rejected.push({ image, reason: verification.reason });
@@ -96,6 +106,11 @@ export class VisualModule {
       await this.extractFromVerifiedSources(artist, sources, images, maxImages, selectedArtworkKeys);
     }
 
+    // Layer 1.5: Use pre-mined artwork candidates already stored in the research cache.
+    if (images.length < maxImages) {
+      await this.extractFromResearchCacheCandidates(artist, images, maxImages, selectedArtworkKeys);
+    }
+
     // Layer 2: Wikimedia Commons + Claude Vision
     if (images.length < maxImages && !this.isVisionTemporarilyUnavailable()) {
       await this.searchWikimediaVerified(artist, images, maxImages, selectedArtworkKeys);
@@ -108,6 +123,67 @@ export class VisualModule {
 
     console.log(`  ✓ Sourced ${images.length} verified images total`);
     return images;
+  }
+
+  private async extractFromResearchCacheCandidates(
+    artist: ArtistInfo,
+    images: Image[],
+    maxImages: number,
+    selectedArtworkKeys: Set<string>
+  ): Promise<void> {
+    const candidates = (artist.artwork_candidates ?? [])
+      .filter((candidate) => candidate.imageUrl)
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .slice(0, 8);
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    console.log(`  Trying ${candidates.length} pre-mined artwork candidate(s) from research cache`);
+
+    for (const candidate of candidates) {
+      if (images.length >= maxImages) {
+        break;
+      }
+
+      const imageUrl = this.normalizeImageUrl(candidate.imageUrl!);
+      const sourcePage = candidate.pageUrl || imageUrl;
+      const artworkKey = this.buildArtworkKey(imageUrl, sourcePage, candidate.title ?? '');
+      if (selectedArtworkKeys.has(artworkKey)) {
+        continue;
+      }
+
+      if (this.isSocialSource(sourcePage, sourcePage) || this.isBlockedImageHost(imageUrl)) {
+        continue;
+      }
+
+      const prevalidated = await this.prevalidateSourceImage(
+        imageUrl,
+        `${candidate.title ?? ''} ${sourcePage} ${candidate.sourceDomain ?? ''}`,
+        true,
+        true,
+        artist
+      );
+      if (!prevalidated.ok) {
+        console.log(`  ✗ Rejected research-cache candidate: ${prevalidated.reason}`);
+        continue;
+      }
+
+      const verification = await this.verifyImageWithClaude(imageUrl, artist);
+      if (!verification.verified || this.isNegativeVerificationReason(verification.reason)) {
+        console.log(`  ✗ Rejected research-cache candidate: ${verification.reason}`);
+        continue;
+      }
+
+      images.push({
+        url: imageUrl,
+        caption: candidate.title || `Artwork by ${artist.full_name}`,
+        attribution: 'Artwork image.',
+      });
+      selectedArtworkKeys.add(artworkKey);
+      console.log(`  ✓ Added research-cache artwork candidate: ${candidate.title || imageUrl}`);
+    }
   }
 
   /**
@@ -129,6 +205,10 @@ export class VisualModule {
       if (images.length >= maxImages) break;
       if (this.isSocialSource(source.url, source.institution)) {
         console.log(`  Skipping social source for images: ${source.url}`);
+        continue;
+      }
+      if (this.shouldSkipDirectExtractionForSource(source.url)) {
+        console.log(`  Skipping noisy direct-source extraction for: ${source.url}`);
         continue;
       }
 
@@ -214,7 +294,11 @@ export class VisualModule {
 
             if (
               this.isMarketArtworkHost(resolvedCandidate.url) &&
-              !this.assetUrlStronglyTargetsArtist(resolvedCandidate.url, artist.full_name)
+              !this.candidateStronglyTargetsArtist(
+                resolvedCandidate.url,
+                resolvedCandidate.objectHref,
+                artist.full_name
+              )
             ) {
               irrelevantForSource += 1;
               console.log(
@@ -271,6 +355,10 @@ export class VisualModule {
         console.log(`  Skipping social source for images: ${source.url}`);
         continue;
       }
+      if (this.shouldSkipVerifiedExtractionForSource(source.url)) {
+        console.log(`  Skipping noisy verified-source extraction for: ${source.url}`);
+        continue;
+      }
 
       try {
         console.log(`  Extracting images from ${source.institution}: ${source.url}`);
@@ -297,7 +385,11 @@ export class VisualModule {
 
             if (
               this.isMarketArtworkHost(normalizedUrl) &&
-              !this.assetUrlStronglyTargetsArtist(normalizedUrl, artist.full_name)
+              !this.candidateStronglyTargetsArtist(
+                normalizedUrl,
+                img.source_page,
+                artist.full_name
+              )
             ) {
               console.log(
                 `  ✗ Rejected from ${source.institution}: Asset URL does not strongly target ${artist.full_name}`
@@ -427,7 +519,7 @@ export class VisualModule {
         images.push({
           url: normalizedUrl,
           caption: img.caption || `Artwork by ${artist.full_name}`,
-          attribution: 'Accepted by heuristic filter before Gemini vision. Educational use.',
+          attribution: 'Artwork image',
         });
         selectedArtworkKeys.add(artworkKey);
         console.log('  ✓ Web image accepted by heuristic filter');
@@ -439,7 +531,7 @@ export class VisualModule {
         images.push({
           url: normalizedUrl,
           caption: img.caption || `Artwork by ${artist.full_name}`,
-          attribution: `Verified via Gemini vision. Educational use.`,
+          attribution: 'Artwork image',
         });
         selectedArtworkKeys.add(artworkKey);
         console.log(`  ✓ Web image verified: ${verification.reason}`);
@@ -525,6 +617,8 @@ export class VisualModule {
     const artistName = artist.full_name.trim();
     const practice = artist.visual_practice?.trim();
     const stateOrCity = artist.birthplace_state?.trim() || artist.birthplace_city?.trim() || '';
+    const regionalTerms = this.buildRegionalImageTerms(artist);
+    const practiceTerms = this.buildPracticeImageTerms(practice);
     const queries = [
       `${artistName} artwork high resolution`,
       `${artistName} obra alta resolução`,
@@ -538,18 +632,101 @@ export class VisualModule {
       `${artistName} google arts and culture`,
       `${artistName} site:artsandculture.google.com`,
       `${artistName} site:enciclopedia.itaucultural.org.br`,
-      `${artistName} site:dailyartfair.com`,
-      `${artistName} site:mutualart.com`,
-      `${artistName} site:artsy.net`,
-      practice ? `${artistName} ${practice} art` : '',
-      practice ? `${artistName} ${practice} artwork` : '',
-      practice ? `${artistName} ${practice} obra` : '',
+      `${artistName} site:pinacoteca.org.br`,
+      `${artistName} site:masp.org.br`,
+      `${artistName} site:mam.org.br`,
+      ...practiceTerms.flatMap((practiceTerm) => [
+        `${artistName} ${practiceTerm} art`,
+        `${artistName} ${practiceTerm} artwork`,
+        `${artistName} ${practiceTerm} obra`,
+        `${artistName} ${practiceTerm} museum`,
+        `${artistName} ${practiceTerm} acervo`,
+      ]),
       stateOrCity ? `${artistName} art ${stateOrCity}` : '',
       stateOrCity ? `${artistName} artwork ${stateOrCity}` : '',
       stateOrCity ? `${artistName} obra ${stateOrCity}` : '',
+      ...regionalTerms.flatMap((regionalTerm) => [
+        `${artistName} ${regionalTerm} obra`,
+        `${artistName} ${regionalTerm} artwork`,
+        `${artistName} ${regionalTerm} ${practiceTerms[0] ?? 'art'}`,
+        `${artistName} ${regionalTerm} museum artwork`,
+        `${artistName} ${regionalTerm} acervo`,
+      ]),
     ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
 
     return queries;
+  }
+
+  private buildPracticeImageTerms(practice?: string): string[] {
+    if (!practice) {
+      return ['art'];
+    }
+
+    const normalized = this.normalizeText(practice);
+    const terms = new Set<string>();
+
+    if (normalized.includes('pint')) {
+      terms.add('painting');
+      terms.add('pintura');
+    }
+    if (normalized.includes('escult')) {
+      terms.add('sculpture');
+      terms.add('escultura');
+    }
+    if (normalized.includes('gravur') || normalized.includes('xilo')) {
+      terms.add('print');
+      terms.add('gravura');
+      terms.add('xilogravura');
+    }
+    if (normalized.includes('desenh')) {
+      terms.add('drawing');
+      terms.add('desenho');
+    }
+    if (normalized.includes('ceram')) {
+      terms.add('ceramic');
+      terms.add('ceramica');
+    }
+    if (normalized.includes('fot')) {
+      terms.add('photography');
+      terms.add('fotografia');
+    }
+
+    terms.add(practice.trim());
+    return Array.from(terms).filter(Boolean).slice(0, 4);
+  }
+
+  private buildRegionalImageTerms(artist: ArtistInfo): string[] {
+    const terms = new Set<string>();
+    const raw = `${artist.birthplace_state ?? ''} ${artist.birthplace_city ?? ''}`.trim();
+    const normalized = this.normalizeText(raw);
+
+    if (normalized) {
+      terms.add(raw.trim());
+    }
+
+    const stateMap: Record<string, string[]> = {
+      pe: ['Pernambuco', 'Recife', 'Nordeste'],
+      ba: ['Bahia', 'Salvador', 'Nordeste'],
+      ce: ['Ceara', 'Fortaleza', 'Nordeste'],
+      pb: ['Paraiba', 'Joao Pessoa', 'Nordeste'],
+      rn: ['Rio Grande do Norte', 'Natal', 'Nordeste'],
+      al: ['Alagoas', 'Maceio', 'Nordeste'],
+      se: ['Sergipe', 'Aracaju', 'Nordeste'],
+      pi: ['Piaui', 'Teresina', 'Nordeste'],
+      ma: ['Maranhao', 'Sao Luis', 'Nordeste'],
+    };
+
+    for (const [code, mappedTerms] of Object.entries(stateMap)) {
+      if (normalized.includes(code) || mappedTerms.some((term) => normalized.includes(this.normalizeText(term)))) {
+        mappedTerms.forEach((term) => terms.add(term));
+      }
+    }
+
+    if (terms.size === 0) {
+      terms.add('Nordeste');
+    }
+
+    return Array.from(terms).filter(Boolean).slice(0, 4);
   }
 
   private getPreferredGoogleSiteFilters(): string[] {
@@ -568,8 +745,8 @@ export class VisualModule {
       'ocula.com',
       'artbasel.com',
       'visualaids.org',
-      'dailyartfair.com',
-      'mutualart.com',
+      'moma.org',
+      'tate.org.uk',
     ];
   }
 
@@ -879,7 +1056,24 @@ export class VisualModule {
     allowSourceContextFallback = false,
     artist?: ArtistInfo
   ): Promise<{ ok: boolean; reason: string }> {
+    const normalizedContext = this.normalizeText(`${url} ${contextText}`);
+
+    if (artist) {
+      const mediumMismatchReason = this.detectPracticeMismatch(artist, normalizedContext);
+      if (mediumMismatchReason) {
+        return { ok: false, reason: mediumMismatchReason };
+      }
+    }
+
     if (this.isStrongArtworkAssetUrl(url)) {
+      if (
+        artist &&
+        this.isMarketArtworkHost(url) &&
+        !this.metadataMatchesArtist(normalizedContext, artist.full_name)
+      ) {
+        return { ok: false, reason: 'Strong artwork asset lacks convincing artist ownership context' };
+      }
+
       const imageData = await this.downloadImageAsBase64(url);
       if (!imageData) {
         return { ok: false, reason: 'Could not download image for validation' };
@@ -897,7 +1091,6 @@ export class VisualModule {
       return { ok: false, reason: 'Could not download image for validation' };
     }
 
-    const normalizedContext = this.normalizeText(`${url} ${contextText}`);
     const artBaselArtworkPage =
       this.isArtBaselArtworkPage(url, contextText) ||
       normalizedContext.includes('artbasel.com/catalog/artwork');
@@ -926,6 +1119,57 @@ export class VisualModule {
     }
 
     return { ok: true, reason: 'Image passed direct-source validation' };
+  }
+
+  private detectPracticeMismatch(artist: ArtistInfo, normalizedContext: string): string | null {
+    const normalizedPractice = this.normalizeText(artist.visual_practice ?? '');
+    if (!normalizedPractice || !normalizedContext) {
+      return null;
+    }
+
+    const mentionsPainting =
+      normalizedContext.includes(' oleo ') ||
+      normalizedContext.includes(' oil on canvas ') ||
+      normalizedContext.includes(' acrylic ') ||
+      normalizedContext.includes(' pintura ') ||
+      normalizedContext.includes(' painting ') ||
+      normalizedContext.includes(' tela ');
+    const mentionsSculpture =
+      normalizedContext.includes(' escultura ') ||
+      normalizedContext.includes(' sculpture ') ||
+      normalizedContext.includes(' carved wood ') ||
+      normalizedContext.includes(' madeira ') ||
+      normalizedContext.includes(' madeira policromada ') ||
+      normalizedContext.includes(' wood sculpture ') ||
+      normalizedContext.includes(' ceramica ') ||
+      normalizedContext.includes(' ceramic ');
+    const mentionsPhotography =
+      normalizedContext.includes(' fotografia ') ||
+      normalizedContext.includes(' photography ') ||
+      normalizedContext.includes(' photo ') ||
+      normalizedContext.includes(' photograph ');
+
+    if (
+      (normalizedPractice.includes('escultura') || normalizedPractice.includes('ceramica')) &&
+      mentionsPainting &&
+      !mentionsSculpture
+    ) {
+      return `Artist practice is "${artist.visual_practice}", but candidate context points to painting rather than sculpture or ceramic work`;
+    }
+
+    if (normalizedPractice.includes('pintura') && mentionsSculpture && !mentionsPainting) {
+      return `Artist practice is "${artist.visual_practice}", but candidate context points to sculpture or object photography rather than painting`;
+    }
+
+    if (
+      normalizedPractice.includes('fotografia') &&
+      (mentionsPainting || mentionsSculpture) &&
+      !mentionsPhotography
+    ) {
+      return `Artist practice is "${artist.visual_practice}", but candidate context points to another medium`;
+    }
+
+    return null;
   }
 
   private containsNonArtworkSignals(text: string, allowPortraitArtwork = false): boolean {
@@ -1077,6 +1321,25 @@ export class VisualModule {
       'cover',
       'catalog',
       'catalogue',
+      'concept art',
+      'digital art',
+      'game art',
+      'fantasy art',
+      'environment art',
+      'character design',
+      'render',
+      'cgi',
+      '3d art',
+      '3d render',
+      'matte painting',
+      'speedpaint',
+      'fan art',
+      'ai art',
+      'midjourney',
+      'krea',
+      'artstation',
+      'deviantart',
+      'behance',
       'publication',
       'publicacao',
       'person holding',
@@ -1306,6 +1569,11 @@ export class VisualModule {
     const normalizedLabel = this.normalizeText(cleanedLabel).replace(/\s+/g, ' ').trim();
     const normalizedContext = this.normalizeText(context).replace(/\s+/g, ' ').trim();
     const normalizedHref = this.normalizeText(objectHref);
+    const hasSpecificObjectLink =
+      normalizedHref.length > 0 &&
+      !normalizedHref.includes('/pessoas/') &&
+      !normalizedHref.includes('/artista/') &&
+      !normalizedHref.endsWith('/');
 
     if (normalizedLabel.length >= 6) {
       const blockedGenericLabels = [
@@ -1338,20 +1606,21 @@ export class VisualModule {
         'obra sem titulo',
       ];
 
+      const untitledButSpecificWork =
+        hasSpecificObjectLink &&
+        (normalizedLabel === 'sem titulo' ||
+          normalizedLabel === 'untitled' ||
+          normalizedLabel.startsWith('sem titulo ') ||
+          normalizedLabel.startsWith('untitled '));
+
       const looksGeneric = blockedGenericLabels.some(
         (blocked) => normalizedLabel === blocked || normalizedLabel.startsWith(`${blocked} `)
       );
 
-      if (!looksGeneric && !this.containsNonArtworkSignals(normalizedLabel)) {
+      if ((untitledButSpecificWork || !looksGeneric) && !this.containsNonArtworkSignals(normalizedLabel)) {
         return true;
       }
     }
-
-    const hasSpecificObjectLink =
-      normalizedHref.length > 0 &&
-      !normalizedHref.includes('/pessoas/') &&
-      !normalizedHref.includes('/artista/') &&
-      !normalizedHref.endsWith('/');
 
     return (
       cleanedLabel.length >= 8 &&
@@ -1363,6 +1632,11 @@ export class VisualModule {
 
   private isNegativeVerificationReason(reason: string): boolean {
     const normalizedReason = this.normalizeText(reason);
+    const signatureOnlyText = this.isLikelyArtworkSignatureText(normalizedReason);
+    if (signatureOnlyText && this.reasonSuggestsStandaloneArtwork(normalizedReason)) {
+      return false;
+    }
+
     const negativeSignals = [
       'not an artwork',
       'photo of a person',
@@ -1566,6 +1840,11 @@ export class VisualModule {
       return false;
     }
 
+    if (tokens.length === 1) {
+      const token = tokens[0];
+      return token.length >= 6 && text.includes(token);
+    }
+
     const surname = tokens[tokens.length - 1];
     const givenNames = tokens.slice(0, -1);
 
@@ -1607,6 +1886,34 @@ export class VisualModule {
     }
   }
 
+  private shouldSkipDirectExtractionForSource(sourceUrl: string): boolean {
+    const normalized = sourceUrl.toLowerCase();
+
+    if (
+      normalized.includes('enciclopedia.itaucultural.org.br') &&
+      !normalized.includes('/obras/') &&
+      !normalized.includes('/obra/')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private shouldSkipVerifiedExtractionForSource(sourceUrl: string): boolean {
+    const normalized = sourceUrl.toLowerCase();
+
+    if (
+      normalized.includes('enciclopedia.itaucultural.org.br') &&
+      !normalized.includes('/obras/') &&
+      !normalized.includes('/obra/')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   private isMarketArtworkHost(url: string): boolean {
     try {
       const hostname = new URL(url).hostname.toLowerCase();
@@ -1638,6 +1945,28 @@ export class VisualModule {
     }
 
     return givenNames.some((token) => normalizedUrl.includes(token));
+  }
+
+  private candidateStronglyTargetsArtist(
+    imageUrl: string,
+    objectHref: string,
+    artistContext: string
+  ): boolean {
+    const normalizedObjectHref = this.normalizeText(objectHref);
+
+    if (
+      this.isStrongArtworkAssetUrl(imageUrl) &&
+      (
+        this.objectHrefTargetsArtist(normalizedObjectHref, artistContext)
+      )
+    ) {
+      return true;
+    }
+
+    return (
+      this.assetUrlStronglyTargetsArtist(imageUrl, artistContext) ||
+      this.objectHrefTargetsArtist(normalizedObjectHref, artistContext)
+    );
   }
 
   private isStrongArtworkAssetUrl(url: string): boolean {
@@ -1769,6 +2098,10 @@ export class VisualModule {
     try {
       const hostname = new URL(sourceUrl).hostname.toLowerCase();
 
+      if (hostname === 'www.escritoriodearte.com' || hostname.endsWith('.escritoriodearte.com')) {
+        return this.extractEscritorioDeArteCandidates(html, sourceUrl);
+      }
+
       if (hostname === 'dailyartfair.com' || hostname.endsWith('.dailyartfair.com')) {
         return this.extractDailyArtFairCandidates(html, sourceUrl);
       }
@@ -1777,6 +2110,42 @@ export class VisualModule {
     }
 
     return [];
+  }
+
+  private extractEscritorioDeArteCandidates(html: string, sourceUrl: string): DirectImageCandidate[] {
+    const candidates: DirectImageCandidate[] = [];
+    const seen = new Set<string>();
+    const listingMatches = Array.from(
+      html.matchAll(
+        /<div class="lista_quadros">[\s\S]*?<a href="(?<href>\/(?:en\/)?artista\/[^"]+\/[^"]*-\d+)"><img src="(?<img>\/quadro\/[^"]+)"[^>]*alt="(?<alt>[^"]+)"/gi
+      )
+    );
+
+    for (const match of listingMatches) {
+      const relativeHref = match.groups?.href?.trim();
+      const relativeImg = match.groups?.img?.trim();
+      const alt = match.groups?.alt?.trim() ?? 'Artwork';
+      if (!relativeHref || !relativeImg) continue;
+
+      const objectHref = new URL(relativeHref, sourceUrl).toString();
+      const imageUrl = this.normalizeImageUrl(new URL(relativeImg, sourceUrl).toString());
+      const objectTitle = alt;
+      const context = `${alt} ${objectHref}`;
+      const entry: DirectImageCandidate = {
+        url: imageUrl,
+        context,
+        alt,
+        title: alt,
+        objectTitle,
+        objectHref,
+      };
+      const key = this.buildArtworkKey(entry.url, entry.objectHref, entry.objectTitle || entry.alt);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(entry);
+    }
+
+    return candidates;
   }
 
   private extractDailyArtFairCandidates(html: string, sourceUrl: string): DirectImageCandidate[] {
@@ -2099,8 +2468,8 @@ Rules:
         : `Return JSON ONLY with keys:
 { "isArtwork": boolean, "isArtistPhoto": boolean, "hasPeople": boolean, "isInstallationView": boolean, "isDecorativeObject": boolean, "isDocumentaryPhoto": boolean, "isArtworkOnly": boolean, "containsTextOverlay": boolean, "isLowQuality": boolean, "confidence": number, "reason": string }
 Rules:
-1) ARTWORK ONLY: Must be the artwork itself (painting/print/drawing/sculpture) — NOT a photo of the artist, NOT an exhibition/install view, NOT a framed piece on a wall, NOT a catalog page, NOT a mockup.
-2) Reject if there are people, gallery spaces, display pedestals, or wide room context.
+1) ARTWORK ONLY: Must be primarily the artwork itself (painting/print/drawing/sculpture) — NOT a photo of the artist, NOT an exhibition/install view, NOT a catalog page, NOT a mockup. A simple frame or narrow border is acceptable if the artwork clearly fills most of the image.
+2) People or animals depicted INSIDE the artwork are allowed. Reject only if there are real people, gallery spaces, display pedestals, or wide room context around the artwork.
 3) If it's a physical object, accept ONLY if it is clearly the artwork itself isolated on a neutral background (no people, no gallery context).
 4) REJECT any image that contains visible text blocks, posters, labels, watermarks, captions, or promotional typography.
 5) Reject if the image is thumbnail-sized, blurry, heavily compressed, pixelated, or too low-resolution for publication.
@@ -2197,6 +2566,20 @@ Return JSON only, no extra text.`,
       if (
         !allow &&
         this.reasonSuggestsStandaloneArtwork(reasonText) &&
+        this.reasonSuggestsDepictedFiguresAreInsideArtwork(reasonText) &&
+        !this.isNegativeVerificationReason(parsed.reason ?? '') &&
+        !isArtistPhoto &&
+        !isInstallationView &&
+        !isDocumentaryPhoto &&
+        !isLowQuality &&
+        !(containsTextOverlay && !signatureOnlyText)
+      ) {
+        allow = true;
+      }
+
+      if (
+        !allow &&
+        this.reasonSuggestsStandaloneArtwork(reasonText) &&
         !this.isNegativeVerificationReason(parsed.reason ?? '') &&
         !isArtistPhoto &&
         !isInstallationView &&
@@ -2277,6 +2660,74 @@ Return JSON only, no extra text.`,
     if (regexFallback) return regexFallback;
 
     return null;
+  }
+
+  private reasonSuggestsDepictedFiguresAreInsideArtwork(reason: string): boolean {
+    const normalized = this.normalizeText(reason);
+    return [
+      'part of the artwork itself',
+      'part of the artwork',
+      'depicted inside the artwork',
+      'depicted are part of the artwork',
+      'within the artwork itself',
+      'inside the artwork itself',
+    ].some((signal) => normalized.includes(signal));
+  }
+
+  private shouldRecoverPositiveArtworkVerification(reason: string): boolean {
+    const normalized = this.normalizeText(reason);
+    if (!normalized) {
+      return false;
+    }
+
+    const explicitSafeTextSignals = [
+      'no text overlay',
+      'there is no visible text',
+      'no visible text',
+      'contains no text',
+      'no promotional typography',
+      'no promotional text',
+      'no watermark',
+      'no caption',
+    ];
+
+    const safeArtworkContext =
+      this.reasonSuggestsStandaloneArtwork(normalized) &&
+      !this.reasonContainsExplicitRejectionCue(normalized);
+
+    const negatedTextConcern =
+      explicitSafeTextSignals.some((signal) => normalized.includes(signal)) ||
+      (normalized.includes('text') &&
+        (normalized.includes('no ') ||
+          normalized.includes('without ') ||
+          normalized.includes('contains no ')));
+
+    return safeArtworkContext && (!this.reasonSuggestsVisibleTextOverlay(normalized) || negatedTextConcern);
+  }
+
+  private reasonContainsExplicitRejectionCue(reason: string): boolean {
+    const normalized = this.normalizeText(reason);
+    return [
+      'not an artwork',
+      'wrong artist',
+      'does not match',
+      'cannot confirm',
+      'cannot verify',
+      'cant confirm',
+      'photo of a person',
+      'photograph of a person',
+      'real people around the artwork',
+      'gallery wall',
+      'room around the artwork',
+      'product page',
+      'product shot',
+      'decor item',
+      'display table',
+      'on a table',
+      'on table',
+      'tabletop',
+      'mockup',
+    ].some((signal) => normalized.includes(signal));
   }
 
   private parseLooseVerificationFields(value: string): Record<string, unknown> | null {

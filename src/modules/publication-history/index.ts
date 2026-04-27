@@ -26,19 +26,26 @@ export class PublicationHistoryModule {
   private readonly rssCandidates: string[];
   private readonly hashnodeApiKey?: string;
   private readonly hashnodePublicationId?: string;
-  private readonly hashnodePublicHost = 'casca.hashnode.dev';
+  private readonly hashnodePublicHost: string;
   private readonly cachePath: string;
 
   constructor(options: {
     rssUrl?: string;
     hashnodeApiKey?: string;
     hashnodePublicationId?: string;
+    hashnodePublicHost?: string;
     cachePath?: string;
   }) {
+    this.hashnodePublicHost =
+      options.hashnodePublicHost ??
+      process.env.HASHNODE_PUBLIC_HOST ??
+      'cascabrain.hashnode.dev';
     this.rssCandidates = [
       options.rssUrl,
       'https://brain.casca-archive.org/rss.xml',
       'https://casca.hashnode.dev/rss.xml',
+      'https://cascanew.hashnode.dev/rss.xml',
+      `https://${this.hashnodePublicHost}/rss.xml`,
     ].filter((value): value is string => Boolean(value));
     this.hashnodeApiKey = options.hashnodeApiKey;
     this.hashnodePublicationId = options.hashnodePublicationId;

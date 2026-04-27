@@ -23,6 +23,14 @@ Older documents in this repository are useful as historical context, but some of
   - at least 3 approval-ready artwork images
   - a non-published artist
 - Rejection is supposed to trigger immediate replacement from the ready queue first, then continued replenishment in the background.
+- Name-first discovery now merges the built-in curated seed list with an optional external curated artist file.
+- By default, if present, the system automatically ingests `/Users/victoryves/Downloads/artistas_nordeste_expandido.txt`.
+- Already-published artists are filtered out before those curated names enter discovery.
+- The system now supports a persistent pre-mining cache at `data/artist-research-cache.json` so strong artist candidates can be researched before synthesis.
+- Each cache entry stores:
+  - biography sources
+  - 3 to 5 candidate artwork URLs
+  - repetition status against local history and external publication history
 
 ## Features
 
@@ -92,6 +100,47 @@ Run the daily workflow manually:
 ```bash
 npm run daily
 ```
+
+Pre-mine the prioritized shortlist into the persistent research cache:
+
+```bash
+npm run pre-mine-shortlist -- --limit 20
+```
+
+The continuous wrapper also runs shortlist pre-mining automatically before each send/replenishment cycle, and the editorial backlog target is 50 ready drafts while the system keeps mining at least 5 new approval-ready drafts per day.
+
+Dashboard:
+
+```bash
+npm run webhooks
+```
+
+Then open:
+
+- `/dashboard` for the live HTML dashboard
+- `/api/dashboard` for the raw JSON snapshot
+- the dashboard also shows two continuous worker health cards:
+- `research miner` for cumulative reliable-artist mining
+- `draft hydrator` for 100% draft preparation plus the daily 5am send
+
+## Continuous Mining Architecture
+
+The production flow now runs as two parallel, continuous workers:
+
+- [scripts/run-research-miner.sh](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-research-miner.sh)
+  grows the reliable-artist cache 24/7.
+- [scripts/run-draft-hydrator.sh](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-draft-hydrator.sh)
+  keeps turning reliable artists into fully-ready drafts 24/7, now in `cache-only` mode so it only consumes artists that already passed the research-cache funnel, and handles the 05:00 local approval email.
+
+On macOS these are supervised with:
+
+- [com.casca.daily-workflow.plist](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/com.casca.daily-workflow.plist)
+- [com.casca.research-miner.plist](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/com.casca.research-miner.plist)
+
+Reliability notes:
+
+- `SERPAPI_API_KEY` can be configured to make Google Images sourcing much more reliable than raw scraping alone
+- `scripts/run-daily.ts` now uses a heartbeat lock plus max-age expiry so hung workflow processes do not block the queue forever
 
 Schedule with OpenClaw (Mac Mini):
 

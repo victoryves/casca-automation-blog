@@ -3,6 +3,8 @@
  * This list powers name-first discovery to guarantee daily coverage.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+
 export interface SeedArtist {
   name: string;
   states?: string; // e.g. "PE" or "PE/PB"
@@ -10,7 +12,7 @@ export interface SeedArtist {
   category: string;
 }
 
-export const SEED_ARTISTS: SeedArtist[] = [
+const BASE_SEED_ARTISTS: SeedArtist[] = [
   // 1) Mestres da Xilogravura e Cordel
   { name: 'J. Borges', states: 'PE', practice: 'xilogravura', category: 'Xilogravura e Cordel' },
   { name: 'Gilvan Samico', states: 'PE', practice: 'xilogravura', category: 'Xilogravura e Cordel' },
@@ -334,3 +336,119 @@ export const SEED_ARTISTS: SeedArtist[] = [
   { name: 'Rodolfo Athayde', states: 'PB', practice: 'pintura', category: 'Emergentes e Diversos' },
   { name: 'Lula de Oliveira', states: 'PB', practice: 'pintura', category: 'Emergentes e Diversos' },
 ];
+
+const EXTERNAL_SEED_PATHS = [
+  process.env.CURATED_ARTISTS_FILE,
+  '/Users/victoryves/Downloads/artistas_nordeste_expandido.txt',
+].filter((value): value is string => Boolean(value));
+
+function normalizeSeedName(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function inferCategory(practice: string): string {
+  const normalized = practice.toLowerCase();
+
+  if (normalized.includes('xilograv') || normalized.includes('cordel') || normalized.includes('gravura')) {
+    return 'Xilogravura e Cordel';
+  }
+  if (normalized.includes('ceram') || normalized.includes('barro') || normalized.includes('escultura') || normalized.includes('madeira')) {
+    return 'Arte Popular e Naïf';
+  }
+  if (normalized.includes('foto')) {
+    return 'Fotografia';
+  }
+  if (normalized.includes('quadrinho') || normalized.includes('cartum') || normalized.includes('ilustra')) {
+    return 'Ilustração e Quadrinhos';
+  }
+  if (normalized.includes('graf') || normalized.includes('mural') || normalized.includes('street') || normalized.includes('urbana') || normalized.includes('graffiti')) {
+    return 'Arte Urbana e Muralismo';
+  }
+  if (normalized.includes('design') || normalized.includes('tipografia') || normalized.includes('letreiramento')) {
+    return 'Design, Ilustração e Cultura Visual';
+  }
+  if (normalized.includes('performance') || normalized.includes('instala') || normalized.includes('conceitual') || normalized.includes('contempor')) {
+    return 'Arte Contemporânea';
+  }
+  if (normalized.includes('pint') || normalized.includes('desenho') || normalized.includes('modern')) {
+    return 'Pintura e Modernismo';
+  }
+
+  return 'Curated External Seeds';
+}
+
+function parseExternalSeedLine(line: string): SeedArtist | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed === 'Artista,Tipo de Arte') {
+    return null;
+  }
+
+  const separatorIndex = trimmed.indexOf(',');
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const name = trimmed.slice(0, separatorIndex).trim();
+  const practice = trimmed.slice(separatorIndex + 1).trim();
+
+  if (!name || !practice) {
+    return null;
+  }
+
+  return {
+    name,
+    practice,
+    category: inferCategory(practice),
+  };
+}
+
+function loadExternalSeedArtists(): SeedArtist[] {
+  for (const path of EXTERNAL_SEED_PATHS) {
+    try {
+      if (!existsSync(path)) {
+        continue;
+      }
+
+      const content = readFileSync(path, 'utf8');
+      const rows = content
+        .split(/\r?\n/)
+        .map((line) => parseExternalSeedLine(line))
+        .filter((seed): seed is SeedArtist => Boolean(seed));
+
+      if (rows.length > 0) {
+        return rows;
+      }
+    } catch {
+      // Ignore missing or unreadable optional external files.
+    }
+  }
+
+  return [];
+}
+
+function mergeSeedArtists(primary: SeedArtist[], secondary: SeedArtist[]): SeedArtist[] {
+  const merged: SeedArtist[] = [];
+  const seen = new Set<string>();
+
+  for (const seed of [...primary, ...secondary]) {
+    const normalized = normalizeSeedName(seed.name);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    merged.push(seed);
+  }
+
+  return merged;
+}
+
+export const SEED_ARTISTS: SeedArtist[] = mergeSeedArtists(
+  BASE_SEED_ARTISTS,
+  loadExternalSeedArtists()
+);

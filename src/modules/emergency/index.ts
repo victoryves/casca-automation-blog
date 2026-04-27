@@ -381,6 +381,11 @@ export class EmergencyFallbackModule {
         continue;
       }
 
+      const existingArtistMetadata = artistOps.parseMetadata(existingArtist);
+      if (existingArtistMetadata.editor_rejected) {
+        continue;
+      }
+
       if (existingArtist?.id) {
         const existingDrafts = await draftOps.findByArtistId(existingArtist.id);
         const hasOpenOrUsedDraft = existingDrafts.some((draft) =>

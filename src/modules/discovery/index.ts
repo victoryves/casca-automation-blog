@@ -365,6 +365,13 @@ export class DiscoveryModule {
       grouped.set(seed.category, current);
     }
 
+    for (const [category, queue] of grouped.entries()) {
+      grouped.set(
+        category,
+        [...queue].sort((a, b) => this.compareSeedPriority(a, b))
+      );
+    }
+
     const categories = Array.from(grouped.keys());
     const balanced: SeedArtist[] = [];
     let added = true;
@@ -383,6 +390,135 @@ export class DiscoveryModule {
     return balanced;
   }
 
+  private compareSeedPriority(a: SeedArtist, b: SeedArtist): number {
+    const scoreDelta = this.seedPriorityScore(b) - this.seedPriorityScore(a);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+
+    const tokenDelta = this.seedDistinctiveTokenCount(b.name) - this.seedDistinctiveTokenCount(a.name);
+    if (tokenDelta !== 0) {
+      return tokenDelta;
+    }
+
+    return a.name.localeCompare(b.name, 'pt-BR');
+  }
+
+  private seedPriorityScore(seed: SeedArtist): number {
+    let score = 0;
+    const normalizedPractice = this.normalizeName(seed.practice);
+    const normalizedCategory = this.normalizeName(seed.category);
+    const normalizedName = this.normalizeName(seed.name);
+    const tokens = normalizedName.split(' ').filter(Boolean);
+
+    score += Math.min(this.seedDistinctiveTokenCount(seed.name), 4) * 4;
+
+    if (tokens.length >= 3) score += 8;
+    else if (tokens.length === 2) score += 4;
+    else score -= 6;
+
+    if (/[()&]/.test(seed.name)) score -= 4;
+    if (/jr\.?|filho|neto/i.test(seed.name)) score += 2;
+    if (tokens.some((token) => token.length === 1)) score -= 2;
+
+    if (
+      normalizedCategory.includes('pintura') ||
+      normalizedCategory.includes('armorial') ||
+      normalizedCategory.includes('fotografia') ||
+      normalizedCategory.includes('xilogravura') ||
+      normalizedCategory.includes('arte popular')
+    ) {
+      score += 10;
+    }
+
+    if (
+      normalizedPractice.includes('pintura') ||
+      normalizedPractice.includes('escultura') ||
+      normalizedPractice.includes('ceramica') ||
+      normalizedPractice.includes('xilogravura') ||
+      normalizedPractice.includes('fotografia') ||
+      normalizedPractice.includes('gravura')
+    ) {
+      score += 8;
+    }
+
+    if (
+      normalizedPractice.includes('arte urbana') ||
+      normalizedPractice.includes('graffiti') ||
+      normalizedPractice.includes('quadrinhos') ||
+      normalizedPractice.includes('ilustracao') ||
+      normalizedPractice.includes('arte digital') ||
+      normalizedPractice.includes('design grafico')
+    ) {
+      score -= 10;
+    }
+
+    score -= this.seedAmbiguityPenalty(seed.name);
+    return score;
+  }
+
+  private seedDistinctiveTokenCount(name: string): number {
+    return this.normalizeName(name)
+      .split(' ')
+      .filter((token) => token.length >= 4 && !this.isVeryCommonPortugueseNameToken(token)).length;
+  }
+
+  private seedAmbiguityPenalty(name: string): number {
+    const tokens = this.normalizeName(name).split(' ').filter(Boolean);
+
+    if (tokens.length === 0) {
+      return 100;
+    }
+
+    let penalty = 0;
+    const commonTokenCount = tokens.filter((token) => this.isVeryCommonPortugueseNameToken(token)).length;
+
+    if (tokens.length === 1) penalty += 8;
+    if (tokens.length === 2 && commonTokenCount === 2) penalty += 10;
+    if (tokens.length >= 3 && commonTokenCount >= tokens.length - 1) penalty += 6;
+    if (this.seedDistinctiveTokenCount(name) === 0) penalty += 12;
+
+    return penalty;
+  }
+
+  private isVeryCommonPortugueseNameToken(token: string): boolean {
+    return new Set([
+      'antonio',
+      'antonio',
+      'jose',
+      'joao',
+      'maria',
+      'ana',
+      'paulo',
+      'pedro',
+      'francisco',
+      'carlos',
+      'luiz',
+      'luis',
+      'miguel',
+      'raimundo',
+      'severino',
+      'ribeiro',
+      'silva',
+      'santos',
+      'souza',
+      'gomes',
+      'barbosa',
+      'ferreira',
+      'lima',
+      'araujo',
+      'oliveira',
+      'carvalho',
+      'nascimento',
+      'almeida',
+      'rodrigues',
+      'cunha',
+      'melo',
+      'pires',
+      'martins',
+    ]).has(token);
+  }
+
   private buildSeedQueries(seed: SeedArtist, states: string[]): string[] {
     const base = `"${seed.name}"`;
     const primaryState = states[0];
@@ -393,10 +529,11 @@ export class DiscoveryModule {
       this.buildQuery(base, 'biografia', primaryState),
       this.buildQuery(base, 'artista visual', 'Nordeste'),
       this.buildQuery(base, practiceHints[1] ?? practiceHints[0], primaryState),
-      this.buildQuery(base, practiceHints[0], 'obra', `site:dailyartfair.com`),
-      this.buildQuery(base, practiceHints[0], 'obra', `site:mutualart.com`),
-      this.buildQuery(base, practiceHints[0], 'obra', `site:artsy.net`),
-      this.buildQuery(base, practiceHints[0], 'obra', `site:wikiart.org`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:artsandculture.google.com`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:enciclopedia.itaucultural.org.br`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:itaucultural.org.br`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:masp.org.br`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:pinacoteca.org.br`),
       this.buildQuery(base, 'site:enciclopedia.itaucultural.org.br'),
       this.buildQuery(base, 'site:wikipedia.org'),
       this.buildQuery(base, 'site:wikidata.org'),
@@ -591,13 +728,8 @@ export class DiscoveryModule {
 
     return [
       `https://www.escritoriodearte.com/artista/${slug}`,
-      `https://dailyartfair.com/artist/${slug}`,
-      `https://www.mutualart.com/Artist/${encodeURIComponent(artistName.replace(/\s+/g, '-'))}`,
-      `https://www.artsy.net/artist/${slug}`,
-      `https://artsandculture.google.com/entity/${wikiTitle}`,
       `https://en.wikipedia.org/wiki/${wikiTitle}`,
       `https://pt.wikipedia.org/wiki/${wikiTitle}`,
-      `https://www.wikidata.org/wiki/${wikiTitle}`,
     ];
   }
 
@@ -803,9 +935,10 @@ export class DiscoveryModule {
     const domain = this.safeDomain(url);
     if (domain) {
       if (domain.includes('escritoriodearte.com')) return 0.9;
-      if (domain.includes('dailyartfair.com')) return 0.86;
-      if (domain.includes('mutualart.com')) return 0.82;
-      if (domain.includes('wikiart.org')) return 0.8;
+      if (domain.includes('dailyartfair.com')) return 0.58;
+      if (domain.includes('mutualart.com')) return 0.55;
+      if (domain.includes('artsy.net')) return 0.6;
+      if (domain.includes('wikiart.org')) return 0.7;
       if (domain.endsWith('.gov.br') || domain.endsWith('.edu.br')) return 0.9;
       if (domain.endsWith('.org.br') || domain.endsWith('.org')) return 0.75;
       if (domain.endsWith('.com.br')) return 0.65;
@@ -841,16 +974,22 @@ export class DiscoveryModule {
       'pinterest.com',
       'blogspot.com',
       'youtube.com',
+      'artsy.net',
+      'mutualart.com',
+      'dailyartfair.com',
+      'artstation.com',
+      'deviantart.com',
+      'behance.net',
     ].some((blocked) => domain === blocked || domain.endsWith(`.${blocked}`));
   }
 
   private getArtworkSourcePriority(url: string): number {
     const domain = this.safeDomain(url) ?? '';
 
-    if (domain.includes('dailyartfair.com')) return 5;
-    if (domain.includes('enciclopedia.itaucultural.org.br')) return 4;
-    if (domain.includes('mutualart.com')) return 3;
-    if (domain.includes('wikiart.org')) return 3;
+    if (domain.includes('artsandculture.google.com')) return 6;
+    if (domain.includes('enciclopedia.itaucultural.org.br')) return 5;
+    if (domain.includes('itaucultural.org.br')) return 4;
+    if (domain.includes('wikiart.org')) return 2;
     if (domain.endsWith('.gov.br') || domain.endsWith('.edu.br') || domain.endsWith('.org.br')) return 2;
     if (domain.includes('wikipedia.org') || domain.includes('wikimedia.org')) return 1;
 

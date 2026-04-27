@@ -18,15 +18,17 @@ import { EmergencyFallbackModule } from '../modules/emergency/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
 import { PublicationHistoryModule } from '../modules/publication-history/index.js';
 import { queueRejectedDraftReplacement } from '../modules/rejections/index.js';
+import { ArtistResearchCache } from '../modules/research-cache/index.js';
 import { ScraperBridge } from '../modules/scraper-bridge/index.js';
 import { Logger } from '../utils/logger.js';
-import type { WorkflowState, Artist } from '../types/index.js';
+import type { WorkflowState, Artist, Image } from '../types/index.js';
 
 export interface WorkflowOptions {
   dryRun?: boolean;
   skipDiscovery?: boolean;
   forceRun?: boolean;
   prepareOnly?: boolean;
+  cacheOnly?: boolean;
 }
 
 interface PendingReplacementRequest {
@@ -39,9 +41,34 @@ const MIN_APPROVAL_IMAGES = 3;
 const MIN_APPROVAL_WORDS = 420;
 const MAX_APPROVAL_PARAGRAPHS = 4;
 const NORMAL_SEND_HOUR = 5;
-const TARGET_READY_PENDING_DRAFTS = 5;
+const TARGET_READY_PENDING_DRAFTS = 50;
 const TARGET_NEW_DRAFTS_PER_DAY = 5;
 const DISCOVERY_BATCH_SIZE = 15;
+const RESEARCH_CACHE_IMPORT_BATCH_SIZE = 50;
+const IMAGE_SOURCING_TIMEOUT_MS = Number(process.env.IMAGE_SOURCING_TIMEOUT_MS ?? 4 * 60 * 1000);
+const CACHE_SOURCE_TARGET = 6;
+const CACHE_CANDIDATE_SOURCE_LIMIT = 5;
+const VISUAL_READY_PREPASS_LIMIT = 3;
+const ARTIST_FAILURE_COOLDOWN_HOURS = 6;
+const ARTIST_HARD_FAILURE_THRESHOLD = 3;
+
+interface ArtistWorkflowMetadata extends Record<string, unknown> {
+  visual_ready_images?: Image[];
+  visual_ready_at?: string;
+  visual_ready_state?: 'ready' | 'pending' | 'failed';
+  visual_ready_last_attempt_at?: string;
+  visual_ready_last_image_count?: number;
+  visual_ready_failure_count?: number;
+  visual_ready_failure_reason?: string;
+  visual_ready_blocked_until?: string;
+  editorial_failure_count?: number;
+  editorial_failure_reason?: string;
+  editorial_failure_at?: string;
+  editorial_blocked_until?: string;
+  last_workflow_failure_at?: string;
+  last_workflow_failure_date?: string;
+  last_workflow_failure_reason?: string;
+}
 
 export class WorkflowOrchestrator {
   private logger: Logger;
@@ -94,6 +121,8 @@ export class WorkflowOrchestrator {
       const emergencyFallback = new EmergencyFallbackModule();
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
+      const urgentReplacementSendRequested =
+        hasPendingReplacementRequest && !options.prepareOnly;
       let sendWindowOpen = this.isNormalSendWindowOpen(config.env.appTimezone);
       if (options.forceRun) {
         this.logger.info('Force run enabled - allowing immediate send window');
@@ -103,7 +132,7 @@ export class WorkflowOrchestrator {
         ...(await this.getPreviouslySentArtistNames()),
         ...(await this.getOpenDraftArtistNames()),
       ]);
-      let readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+      let readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
       let readyPendingDraft = readyPendingDrafts[0] ?? null;
       let readyPendingCount = readyPendingDrafts.length;
       let draftsCreatedToday = await draftOps.countCreatedOnDate(
@@ -116,7 +145,13 @@ export class WorkflowOrchestrator {
           Math.max(0, TARGET_NEW_DRAFTS_PER_DAY - draftsCreatedToday)
         );
       let emailSentToday = await email.emailSentToday();
-      let sendStillNeeded = hasPendingReplacementRequest || (!emailSentToday && sendWindowOpen);
+      let outstandingApprovalDraft = await this.resolveOutstandingApprovalDraft(email);
+      let publishedToday = await publishingOps.publishedOnDate(
+        state.date,
+        config.env.appTimezone
+      );
+      let sendStillNeeded =
+        sendWindowOpen && !publishedToday && !outstandingApprovalDraft;
       let preparationSlotsNeeded = computePreparationSlotsNeeded();
 
       if (options.prepareOnly) {
@@ -127,12 +162,31 @@ export class WorkflowOrchestrator {
         state.status = 'discovering';
       }
 
+      if (options.cacheOnly) {
+        this.logger.info(
+          'Cache-only mode enabled - only artists imported from the research cache will be used for new drafts'
+        );
+      }
+
       if (options.forceRun) {
         this.logger.info('Force run enabled - bypassing send/backlog guards for a fresh draft');
         emailSentToday = false;
+        outstandingApprovalDraft = null;
+        publishedToday = false;
         if (!options.prepareOnly) {
           sendStillNeeded = true;
         }
+      }
+
+      if (urgentReplacementSendRequested) {
+        this.logger.info(
+          `Pending replacement request detected (${pendingReplacementRequests.length}) - allowing immediate replacement send outside the normal daily window`
+        );
+        sendWindowOpen = true;
+        emailSentToday = false;
+        outstandingApprovalDraft = null;
+        publishedToday = false;
+        sendStillNeeded = true;
       }
 
       if (readyPendingDraft && sendStillNeeded) {
@@ -142,7 +196,7 @@ export class WorkflowOrchestrator {
           if (!preparedArtist) {
             await draftOps.delete(readyPendingDraft.id!);
             this.logger.warn(`Discarded draft ${readyPendingDraft.id} because artist was missing`);
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
             readyPendingDraft = readyPendingDrafts[0] ?? null;
             readyPendingCount = readyPendingDrafts.length;
             continue;
@@ -153,7 +207,7 @@ export class WorkflowOrchestrator {
             this.logger.warn(
               `Discarded draft ${readyPendingDraft.id} because the article was not editorially ready`
             );
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
             readyPendingDraft = readyPendingDrafts[0] ?? null;
             readyPendingCount = readyPendingDrafts.length;
             continue;
@@ -175,7 +229,7 @@ export class WorkflowOrchestrator {
             this.logger.warn(
               `Discarded draft ${readyPendingDraft.id} because only ${approvalCheck.accepted.length} approval-ready image(s) remained`
             );
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
             readyPendingDraft = readyPendingDrafts[0] ?? null;
             readyPendingCount = readyPendingDrafts.length;
             continue;
@@ -191,6 +245,7 @@ export class WorkflowOrchestrator {
             await email.sendApprovalEmail({
               draftId: readyPendingDraft.id!,
               images: readyPendingDraft.parsedImages,
+              bypassDailyCap: hasPendingReplacementRequest,
             });
 
             state.email_sent = true;
@@ -198,6 +253,7 @@ export class WorkflowOrchestrator {
             state.draft_id = readyPendingDraft.id;
             state.status = 'awaiting_approval';
             emailSentToday = true;
+            outstandingApprovalDraft = await this.resolveOutstandingApprovalDraft(email);
             sendStillNeeded = false;
             blockedArtistNames.add(this.normalizeArtistName(preparedArtist.full_name));
           } catch (preparedDraftError) {
@@ -221,7 +277,7 @@ export class WorkflowOrchestrator {
             await draftOps.delete(readyPendingDraft.id!);
           }
 
-          readyPendingDrafts = await this.loadUniqueReadyPendingDrafts();
+          readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
           readyPendingDraft = readyPendingDrafts[0] ?? null;
           readyPendingCount = readyPendingDrafts.length;
 
@@ -235,9 +291,9 @@ export class WorkflowOrchestrator {
         }
       }
 
-      if (hasPendingReplacementRequest) {
+      if (hasPendingReplacementRequest && !urgentReplacementSendRequested) {
         this.logger.info(
-          `Pending replacement request detected (${pendingReplacementRequests.length}) - bypassing sent-today guard`
+          `Pending replacement request detected (${pendingReplacementRequests.length}) during prepare-only mode - queue will be replenished without sending`
         );
       }
 
@@ -273,20 +329,34 @@ export class WorkflowOrchestrator {
           }
 
           const normalizedPendingArtistName = this.normalizeArtistName(pendingArtist.full_name);
+          const pendingArtistMetadata = artistOps.parseMetadata(pendingArtist);
 
           try {
             await this.enrichArtistSources(pendingArtist.id!);
             const artistSources = await sourceOps.findByArtistId(pendingArtist.id!);
-            const images = await visual.sourceImages(
-              {
-                full_name: pendingArtist.full_name,
-                visual_practice: pendingArtist.visual_practice ?? undefined,
-                birthplace_city: pendingArtist.birthplace_city ?? undefined,
-                birthplace_state: pendingArtist.birthplace_state ?? undefined,
-              },
-              artistSources,
-              pendingDraft.id!,
-              3
+            const images = await this.withTimeout(
+              visual.sourceImages(
+                {
+                  full_name: pendingArtist.full_name,
+                  visual_practice: pendingArtist.visual_practice ?? undefined,
+                  birthplace_city: pendingArtist.birthplace_city ?? undefined,
+                  birthplace_state: pendingArtist.birthplace_state ?? undefined,
+                  artwork_candidates: Array.isArray(pendingArtistMetadata.research_cache_artwork_candidates)
+                    ? pendingArtistMetadata.research_cache_artwork_candidates as Array<{
+                        pageUrl: string;
+                        imageUrl?: string;
+                        title?: string;
+                        sourceDomain?: string;
+                        confidence?: number;
+                      }>
+                    : undefined,
+                },
+                artistSources,
+                pendingDraft.id!,
+                3
+              ),
+              IMAGE_SOURCING_TIMEOUT_MS,
+              `Image sourcing timed out for pending draft ${pendingDraft.id}`
             );
 
             const approvalCheck = await visual.filterApprovalImages(
@@ -315,6 +385,7 @@ export class WorkflowOrchestrator {
               await email.sendApprovalEmail({
                 draftId: pendingDraft.id!,
                 images: approvalCheck.accepted,
+                bypassDailyCap: hasPendingReplacementRequest,
               });
 
               state.email_sent = true;
@@ -410,10 +481,33 @@ export class WorkflowOrchestrator {
         return state;
       }
 
+      const importedResearchArtistIds = await this.importResearchCacheArtists({
+        limit: Math.max(RESEARCH_CACHE_IMPORT_BATCH_SIZE, preparationSlotsNeeded),
+        blockedArtistNames,
+      });
+
+      if (importedResearchArtistIds.length > 0) {
+        this.logger.info(
+          `Imported ${importedResearchArtistIds.length} artist(s) from the pre-mined research cache for verification`
+        );
+        await verification.verifyBatch(importedResearchArtistIds);
+      }
+
       // Step 2: Check for verified unpublished artists
       let verifiedArtists = await artistOps.findVerifiedUnpublished();
+      if (options.cacheOnly) {
+        verifiedArtists = verifiedArtists.filter((artist) => this.isResearchCacheImportedArtist(artist));
+      }
       verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, blockedArtistNames);
       this.logger.info(`Found ${verifiedArtists.length} verified unpublished artists with sources`);
+
+      if (verifiedArtists.length > 0 && (sendStillNeeded || preparationSlotsNeeded > 0)) {
+        await this.prehydrateVisualReadyArtists(
+          verifiedArtists,
+          visual,
+          Math.min(VISUAL_READY_PREPASS_LIMIT, Math.max(1, preparationSlotsNeeded || 1))
+        );
+      }
 
       const maxDiscoveryAttempts = 12;
       let discoveryAttempts = 0;
@@ -422,7 +516,7 @@ export class WorkflowOrchestrator {
 
       while (sendStillNeeded || preparationSlotsNeeded > 0) {
         if (verifiedArtists.length === 0) {
-          if (options.skipDiscovery) {
+          if (options.skipDiscovery || options.cacheOnly) {
             break;
           }
 
@@ -455,6 +549,9 @@ export class WorkflowOrchestrator {
               this.logger.info(`Verification complete: ${verified}/${discoveryResult.candidates.length} verified`);
 
               verifiedArtists = await artistOps.findVerifiedUnpublished();
+              if (options.cacheOnly) {
+                verifiedArtists = verifiedArtists.filter((artist) => this.isResearchCacheImportedArtist(artist));
+              }
               verifiedArtists = await this.filterArtistsWithSources(verifiedArtists, 1, blockedArtistNames);
 
               if (verifiedArtists.length > 0) {
@@ -492,9 +589,38 @@ export class WorkflowOrchestrator {
         state.artist_id = selectedArtist.id;
         this.logger.info(`Selected artist: ${selectedArtist.full_name} (ID: ${selectedArtist.id})`);
         let currentDraftId: number | undefined;
+        const selectedArtistMetadata = artistOps.parseMetadata(selectedArtist);
 
         try {
           await this.enrichArtistSources(selectedArtist.id!);
+
+          const enrichedSources = await sourceOps.findByArtistId(selectedArtist.id!);
+          if (!this.hasEditorialSourceDepth(enrichedSources)) {
+            await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
+            await this.bumpArtistFailureMetadata(
+              selectedArtist.id!,
+              'editorial',
+              'Artist lacks enough rich editorial sources after enrichment',
+              state.date
+            );
+            this.logger.warn(
+              `Skipping artist ${selectedArtist.id} because source enrichment still left insufficient editorial depth`
+            );
+            continue;
+          }
+
+          const visualReady = await this.ensureArtistVisualReady(
+            selectedArtist,
+            visual,
+            selectedArtistMetadata
+          );
+          if (!visualReady.ready) {
+            await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
+            this.logger.warn(
+              `Skipping artist ${selectedArtist.id} because visual-ready stage only found ${visualReady.images.length} approval-ready image(s)`
+            );
+            continue;
+          }
 
           this.logger.info('Starting article synthesis');
           state.status = 'synthesizing';
@@ -509,7 +635,12 @@ export class WorkflowOrchestrator {
           if (!this.isDraftEditoriallyReady(synthesisResult.draft, selectedArtist.full_name)) {
             await draftOps.delete(synthesisResult.draft.id!);
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
-            await artistOps.delete(selectedArtist.id!);
+            await this.bumpArtistFailureMetadata(
+              selectedArtist.id!,
+              'editorial',
+              'Draft did not meet editorial readiness requirements',
+              state.date
+            );
             state.draft_id = undefined;
             this.logger.warn(
               `Skipping artist ${selectedArtist.id} because the article did not meet editorial readiness requirements`
@@ -517,36 +648,17 @@ export class WorkflowOrchestrator {
             continue;
           }
 
-          this.logger.info('Sourcing verified images');
-          const artistSources = await sourceOps.findByArtistId(selectedArtist.id!);
-          const images = await visual.sourceImages(
-            {
-              full_name: selectedArtist.full_name,
-              visual_practice: selectedArtist.visual_practice ?? undefined,
-              birthplace_city: selectedArtist.birthplace_city ?? undefined,
-              birthplace_state: selectedArtist.birthplace_state ?? undefined,
-            },
-            artistSources,
-            synthesisResult.draft.id!,
-            3
-          );
-          this.logger.info(`Sourced ${images.length} verified images`);
-
-          const approvalCheck = await visual.filterApprovalImages(
-            {
-              full_name: selectedArtist.full_name,
-              visual_practice: selectedArtist.visual_practice ?? undefined,
-              birthplace_city: selectedArtist.birthplace_city ?? undefined,
-              birthplace_state: selectedArtist.birthplace_state ?? undefined,
-            },
-            images
-          );
-          const approvedImages = approvalCheck.accepted;
+          const approvedImages = visualReady.images;
 
           if (approvedImages.length < MIN_APPROVAL_IMAGES) {
             await draftOps.delete(synthesisResult.draft.id!);
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
-            await artistOps.delete(selectedArtist.id!);
+            await this.bumpArtistFailureMetadata(
+              selectedArtist.id!,
+              'visual',
+              `Only ${approvedImages.length} approval-ready image(s) were found`,
+              state.date
+            );
             state.draft_id = undefined;
             this.logger.warn(
               `Skipping artist ${selectedArtist.id} because only ${approvedImages.length} approval-ready image(s) were found`
@@ -568,6 +680,7 @@ export class WorkflowOrchestrator {
             await email.sendApprovalEmail({
               draftId: synthesisResult.draft.id!,
               images: approvedImages,
+              bypassDailyCap: hasPendingReplacementRequest,
             });
 
             state.email_sent = true;
@@ -615,12 +728,12 @@ export class WorkflowOrchestrator {
           }
           try {
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
-            await artistOps.mergeMetadata(selectedArtist.id!, {
-              last_workflow_failure_at: new Date().toISOString(),
-              last_workflow_failure_date: state.date,
-              last_workflow_failure_reason:
-                artistError instanceof Error ? artistError.message : String(artistError),
-            });
+            await this.bumpArtistFailureMetadata(
+              selectedArtist.id!,
+              'editorial',
+              artistError instanceof Error ? artistError.message : String(artistError),
+              state.date
+            );
           } catch (statusError) {
             this.logger.warn(
               `Failed to persist failure metadata for artist ${selectedArtist.id} after workflow error`,
@@ -672,6 +785,7 @@ export class WorkflowOrchestrator {
             await email.sendApprovalEmail({
               draftId: fallbackDraft.draftId,
               images: fallbackDraft.images,
+              bypassDailyCap: hasPendingReplacementRequest,
             });
 
             state.email_sent = true;
@@ -788,6 +902,144 @@ export class WorkflowOrchestrator {
     }
   }
 
+  private async importResearchCacheArtists(params: {
+    limit: number;
+    blockedArtistNames: Set<string>;
+  }): Promise<number[]> {
+    const { limit, blockedArtistNames } = params;
+    if (limit <= 0) {
+      return [];
+    }
+
+    const researchCache = new ArtistResearchCache();
+    const entries = await researchCache.readAll();
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const previouslySentNames = await this.getPreviouslySentArtistNames();
+    const openDraftNames = await this.getOpenDraftArtistNames();
+    const blockedNameList = [
+      ...blockedArtistNames,
+      ...previouslySentNames,
+      ...openDraftNames,
+    ];
+    const externallyPublishedHaystacks = await this.getPublishedBlogHaystacks();
+    const importedArtistIds = new Set<number>();
+
+    const orderedEntries = [...entries].sort((a, b) => {
+      const premiumA = this.getResearchCacheEntryConversionScore(a);
+      const premiumB = this.getResearchCacheEntryConversionScore(b);
+      if (premiumA !== premiumB) {
+        return premiumB - premiumA;
+      }
+
+      const rankA = a.shortlistRank ?? Number.MAX_SAFE_INTEGER;
+      const rankB = b.shortlistRank ?? Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+
+      return (a.minedAt ?? '').localeCompare(b.minedAt ?? '');
+    });
+
+    for (const entry of orderedEntries) {
+      if (importedArtistIds.size >= limit) {
+        break;
+      }
+
+      const normalizedArtistName = this.normalizeArtistName(entry.artistName);
+      if (!normalizedArtistName) {
+        continue;
+      }
+
+      if (!entry.repetition?.eligible) {
+        continue;
+      }
+
+      if (entry.biographySources.length < 2 || entry.artworkCandidates.length < MIN_APPROVAL_IMAGES) {
+        continue;
+      }
+
+      if (this.isPotentialDuplicateName(normalizedArtistName, blockedNameList)) {
+        continue;
+      }
+
+      if (this.isArtistPublishedInExternalBlog(entry.artistName, externallyPublishedHaystacks)) {
+        continue;
+      }
+
+      const existingArtist = await artistOps.findByNormalizedName(entry.artistName);
+      if (existingArtist?.status === 'published' || existingArtist?.status === 'rejected') {
+        continue;
+      }
+
+      const artistId =
+        existingArtist?.id ??
+        (await artistOps.create({
+          full_name: entry.artistName,
+          birthplace_city: undefined,
+          birthplace_state: entry.states,
+          visual_practice: entry.practice,
+          status: 'discovered',
+          metadata: JSON.stringify({
+            curated: true,
+            shortlist_rank: entry.shortlistRank ?? null,
+            research_cache_imported_at: new Date().toISOString(),
+            research_cache_mined_at: entry.minedAt,
+            research_cache_category: entry.category ?? null,
+            research_cache_notes: entry.notes,
+            research_cache_artwork_candidates: entry.artworkCandidates.slice(0, 5),
+          }),
+        }));
+
+      if (!artistId) {
+        continue;
+      }
+
+      if (existingArtist?.id) {
+        await artistOps.mergeMetadata(artistId, {
+          shortlist_rank: entry.shortlistRank ?? null,
+          research_cache_imported_at: new Date().toISOString(),
+          research_cache_mined_at: entry.minedAt,
+          research_cache_category: entry.category ?? null,
+          research_cache_notes: entry.notes,
+          research_cache_artwork_candidates: entry.artworkCandidates.slice(0, 5),
+        });
+      }
+
+      for (const biographySource of entry.biographySources) {
+        if (await sourceOps.exists(artistId, biographySource.url)) {
+          continue;
+        }
+
+        await sourceOps.create({
+          artist_id: artistId,
+          url: biographySource.url,
+          institution: biographySource.institution,
+          credibility_score: biographySource.credibilityScore,
+          content_summary: biographySource.summary,
+        });
+      }
+
+      await this.attachResearchCacheCandidateSources(artistId, entry.artistName, entry.artworkCandidates);
+
+      const sources = await sourceOps.findByArtistId(artistId);
+      const eligibleSourceCount = sources.filter(
+        (source) => !this.isSocialSource(source.url, source.institution)
+      ).length;
+
+      if (eligibleSourceCount < 2) {
+        continue;
+      }
+
+      blockedNameList.push(normalizedArtistName);
+      importedArtistIds.add(artistId);
+    }
+
+    return Array.from(importedArtistIds);
+  }
+
   private async filterArtistsWithSources(
     artists: Artist[],
     minSources: number,
@@ -804,6 +1056,7 @@ export class WorkflowOrchestrator {
     ];
     const externallyPublishedHaystacks = await this.getPublishedBlogHaystacks();
     const filtered: Artist[] = [];
+    const cooledDownFallbackCandidates: Artist[] = [];
 
     for (const artist of artists) {
       if (!artist.id) continue;
@@ -818,6 +1071,14 @@ export class WorkflowOrchestrator {
         if (blockedArtistNames.has(normalizedArtistName)) {
           this.logger.warn(
             `Skipping artist ${artist.id} (${artist.full_name}) because this artist is blocked in the current workflow run`
+          );
+          continue;
+        }
+
+        if (this.isArtistCoolingDown(artist)) {
+          cooledDownFallbackCandidates.push(artist);
+          this.logger.warn(
+            `Skipping artist ${artist.id} (${artist.full_name}) because this artist is cooling down after repeated failures`
           );
           continue;
         }
@@ -863,6 +1124,15 @@ export class WorkflowOrchestrator {
       } catch (error) {
         this.logger.warn(`Failed to count sources for artist ${artist.id}`, error);
       }
+    }
+
+    if (filtered.length === 0 && cooledDownFallbackCandidates.length > 0) {
+      const rankedFallback = await this.rankArtistsForVariety(cooledDownFallbackCandidates);
+      const reintroduced = rankedFallback.slice(0, Math.min(5, rankedFallback.length));
+      this.logger.warn(
+        `No non-cooled verified artists were available; reintroducing ${reintroduced.length} cooled-down fallback artist(s)`
+      );
+      return reintroduced;
     }
 
     return filtered;
@@ -937,29 +1207,56 @@ export class WorkflowOrchestrator {
     if (normalized.includes('gravur') || normalized.includes('print')) return 'gravura';
     if (normalized.includes('performance')) return 'performance';
     if (normalized.includes('conceit')) return 'arte_conceitual';
+    if (normalized.includes('ilustr')) return 'ilustracao';
+    if (normalized.includes('quadrinh') || normalized.includes('comic')) return 'quadrinhos';
+    if (normalized.includes('design')) return 'design';
+    if (normalized.includes('graffiti')) return 'graffiti';
+    if (normalized.includes('mural')) return 'muralismo';
+    if (normalized.includes('urban')) return 'arte_urbana';
 
     return normalized;
   }
 
   private getBacklogReadinessScore(artist: Artist): number {
-    const practice = this.normalizePractice(artist.visual_practice);
+    const metadata = artistOps.parseMetadata(artist) as ArtistWorkflowMetadata;
+    const cachedCandidates = Array.isArray(metadata.research_cache_artwork_candidates)
+      ? (metadata.research_cache_artwork_candidates as Array<{
+          pageUrl?: string;
+          sourceDomain?: string;
+          confidence?: number;
+        }>)
+      : [];
+    const shortlistRank =
+      typeof metadata.shortlist_rank === 'number' ? metadata.shortlist_rank : null;
 
-    switch (practice) {
-      case 'pintura':
-      case 'escultura':
-      case 'xilogravura':
-      case 'gravura':
-      case 'ceramica':
-      case 'desenho':
-        return 5;
-      case 'fotografia':
-      case 'performance':
-      case 'instalacao':
-      case 'arte_conceitual':
-        return 1;
-      default:
-        return 3;
+    let score = this.getPracticeConversionScore(artist.visual_practice);
+
+    if (this.getVisualReadyImagesFromMetadata(metadata).length >= MIN_APPROVAL_IMAGES) {
+      score += 40;
     }
+    if (metadata.visual_ready_state === 'ready') {
+      score += 10;
+    } else if (metadata.visual_ready_state === 'failed') {
+      score -= 10;
+    }
+
+    if (cachedCandidates.length >= 3) score += 4;
+    if (cachedCandidates.length >= 5) score += 3;
+    if (cachedCandidates.some((candidate) => this.isPremiumArtworkCandidate(candidate))) {
+      score += 4;
+    }
+    if (cachedCandidates.filter((candidate) => this.isPremiumArtworkCandidate(candidate)).length >= 2) {
+      score += 3;
+    }
+    if (typeof shortlistRank === 'number') {
+      score += Math.max(0, 4 - Math.floor(shortlistRank / 40));
+    }
+
+    const visualFailures = Number(metadata.visual_ready_failure_count ?? 0) || 0;
+    const editorialFailures = Number(metadata.editorial_failure_count ?? 0) || 0;
+    score -= Math.min(18, visualFailures * 4 + editorialFailures * 3);
+
+    return score;
   }
 
   private getSourceQualityScore(urls: string[]): number {
@@ -998,6 +1295,117 @@ export class WorkflowOrchestrator {
     return score;
   }
 
+  private getResearchCacheEntryConversionScore(entry: {
+    practice?: string;
+    category?: string;
+    shortlistRank?: number;
+    biographySources: Array<{ url: string; credibilityScore?: number }>;
+    artworkCandidates: Array<{
+      pageUrl?: string;
+      sourceDomain?: string;
+      confidence?: number;
+      title?: string;
+    }>;
+  }): number {
+    let score = this.getPracticeConversionScore(entry.practice);
+
+    score += Math.min(4, entry.biographySources.length);
+    score += Math.min(6, entry.artworkCandidates.length * 2);
+
+    const premiumArtworkCandidates = entry.artworkCandidates.filter((candidate) =>
+      this.isPremiumArtworkCandidate(candidate)
+    );
+    score += premiumArtworkCandidates.length * 3;
+
+    const strongConfidenceCount = entry.artworkCandidates.filter(
+      (candidate) => (candidate.confidence ?? 0) >= 0.82
+    ).length;
+    score += Math.min(4, strongConfidenceCount);
+
+    const category = this.normalizeText(entry.category ?? '');
+    if (
+      category.includes('pintura') ||
+      category.includes('armorial') ||
+      category.includes('xilogravura') ||
+      category.includes('arte popular') ||
+      category.includes('naif')
+    ) {
+      score += 4;
+    } else if (category.includes('fotografia') || category.includes('arte contemporanea')) {
+      score += 1;
+    }
+
+    if (typeof entry.shortlistRank === 'number') {
+      score += Math.max(0, 5 - Math.floor(entry.shortlistRank / 30));
+    }
+
+    return score;
+  }
+
+  private getPracticeConversionScore(practice?: string | null): number {
+    const normalized = this.normalizePractice(practice);
+
+    switch (normalized) {
+      case 'pintura':
+      case 'escultura':
+      case 'xilogravura':
+      case 'gravura':
+      case 'ceramica':
+      case 'desenho':
+        return 10;
+      case 'ilustracao':
+      case 'quadrinhos':
+      case 'design':
+        return 7;
+      case 'fotografia':
+        return 5;
+      case 'performance':
+      case 'instalacao':
+      case 'arte_conceitual':
+      case 'arte_urbana':
+      case 'graffiti':
+      case 'muralismo':
+        return 1;
+      default:
+        return 4;
+    }
+  }
+
+  private isPremiumArtworkCandidate(candidate: {
+    pageUrl?: string;
+    sourceDomain?: string;
+    confidence?: number;
+    title?: string;
+  }): boolean {
+    const pageUrl = (candidate.pageUrl ?? '').toLowerCase();
+    const sourceDomain = (candidate.sourceDomain ?? '').toLowerCase();
+    const title = this.normalizeText(candidate.title ?? '');
+    const haystack = `${pageUrl} ${sourceDomain}`;
+    const confidence = candidate.confidence ?? 0;
+
+    if (confidence < 0.72) {
+      return false;
+    }
+
+    if (
+      haystack.includes('artsandculture.google.com') ||
+      haystack.includes('itaucultural') ||
+      haystack.includes('pinacoteca') ||
+      haystack.includes('museu') ||
+      haystack.includes('instituto') ||
+      haystack.includes('escritoriodearte') ||
+      haystack.includes('enciclopedia.itaucultural')
+    ) {
+      return true;
+    }
+
+    if (confidence >= 0.85 && title && !title.includes('artist') && !title.includes('portrait')) {
+      return true;
+    }
+
+    return false;
+  }
+
   private async enrichArtistSources(artistId: number): Promise<void> {
     try {
       const scraperBridge = new ScraperBridge();
@@ -1005,19 +1413,50 @@ export class WorkflowOrchestrator {
         return;
       }
 
-      this.logger.info('Enriching sources with multi-backend scraping');
-      const sources = await sourceOps.findByArtistId(artistId);
-      let enriched = 0;
+      const artist = await artistOps.findById(artistId);
+      if (!artist) {
+        return;
+      }
 
-      for (const source of sources) {
-        if (source.content_summary && source.content_summary.length >= 400) continue;
+      const metadata = artistOps.parseMetadata(artist);
+      if (Array.isArray(metadata.research_cache_artwork_candidates)) {
+        await this.attachResearchCacheCandidateSources(
+          artistId,
+          metadata.research_cache_artwork_candidates as Array<{
+            pageUrl: string;
+            imageUrl?: string;
+            title?: string;
+            sourceDomain?: string;
+            confidence?: number;
+          }>
+        );
+      }
+
+      this.logger.info('Enriching sources with multi-backend scraping');
+      let sources = await sourceOps.findByArtistId(artistId);
+      let enriched = 0;
+      let createdSources = 0;
+
+      const prioritizedSources = [...sources].sort((a, b) => {
+        const summaryReadyA = (a.content_summary?.length ?? 0) >= 700 ? 1 : 0;
+        const summaryReadyB = (b.content_summary?.length ?? 0) >= 700 ? 1 : 0;
+
+        if (summaryReadyA !== summaryReadyB) {
+          return summaryReadyA - summaryReadyB;
+        }
+
+        return (b.credibility_score ?? 0) - (a.credibility_score ?? 0);
+      });
+
+      for (const source of prioritizedSources.slice(0, 10)) {
+        if (source.content_summary && source.content_summary.length >= 700) continue;
 
         try {
           const result = await scraperBridge.fetchPage(source.url);
           if (result.success && result.content && result.content.length > 100) {
             await sourceOps.updateContentSummary(source.id!, result.content);
             enriched++;
-            await this.persistDiscoveredSourceLinks(
+            createdSources += await this.persistDiscoveredSourceLinks(
               artistId,
               source.url,
               result.discovered_urls ?? []
@@ -1028,8 +1467,39 @@ export class WorkflowOrchestrator {
         }
       }
 
+      if (createdSources > 0) {
+        sources = await sourceOps.findByArtistId(artistId);
+      }
+
+      const eligibleSourceCount = sources.filter(
+        (source) => !this.isSocialSource(source.url, source.institution)
+      ).length;
+
+      if (eligibleSourceCount < CACHE_SOURCE_TARGET) {
+        const refreshedArtist = await artistOps.findById(artistId);
+        const refreshedMetadata = artistOps.parseMetadata(refreshedArtist);
+
+        if (Array.isArray(refreshedMetadata.research_cache_artwork_candidates)) {
+          createdSources += await this.attachResearchCacheCandidateSources(
+            artistId,
+            refreshedArtist?.full_name ?? artist.full_name,
+            refreshedMetadata.research_cache_artwork_candidates as Array<{
+              pageUrl: string;
+              imageUrl?: string;
+              title?: string;
+              sourceDomain?: string;
+              confidence?: number;
+            }>
+          );
+        }
+      }
+
       if (enriched > 0) {
         this.logger.info(`Enriched ${enriched}/${sources.length} sources`);
+      }
+
+      if (createdSources > 0) {
+        this.logger.info(`Added ${createdSources} extra source(s) from research-cache candidates`);
       }
     } catch (error) {
       this.logger.warn('Source enrichment failed (non-fatal)', error);
@@ -1040,14 +1510,14 @@ export class WorkflowOrchestrator {
     artistId: number,
     parentUrl: string,
     discoveredUrls: string[]
-  ): Promise<void> {
+  ): Promise<number> {
     if (discoveredUrls.length === 0) {
-      return;
+      return 0;
     }
 
     const artist = await artistOps.findById(artistId);
     if (!artist) {
-      return;
+      return 0;
     }
 
     const existingSources = await sourceOps.findByArtistId(artistId);
@@ -1085,6 +1555,172 @@ export class WorkflowOrchestrator {
         // Unique constraint or transient failure: safe to ignore.
       }
     }
+
+    return created;
+  }
+
+  private async attachResearchCacheCandidateSources(
+    artistId: number,
+    artistName: string,
+    artworkCandidates: Array<{
+      pageUrl: string;
+      imageUrl?: string;
+      title?: string;
+      sourceDomain?: string;
+      confidence?: number;
+    }>
+  ): Promise<number> {
+    if (!Array.isArray(artworkCandidates) || artworkCandidates.length === 0) {
+      return 0;
+    }
+
+    const existingSources = await sourceOps.findByArtistId(artistId);
+    const existingUrls = new Set(existingSources.map((source) => source.url));
+    const config = this.ensureConfig();
+    let created = 0;
+
+    const sortedCandidates = [...artworkCandidates]
+      .filter((candidate) => candidate?.pageUrl)
+      .filter((candidate) => this.isStrongResearchCacheCandidate(candidate, artistName))
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .slice(0, CACHE_CANDIDATE_SOURCE_LIMIT);
+
+    for (const candidate of sortedCandidates) {
+      const candidateUrl = candidate.pageUrl;
+      if (!candidateUrl || existingUrls.has(candidateUrl)) {
+        continue;
+      }
+
+      if (this.isSocialLikeUrl(candidateUrl)) {
+        continue;
+      }
+
+      const institution =
+        getInstitutionName(candidateUrl, config.institutions) ||
+        candidate.sourceDomain ||
+        'Artwork Source';
+      const credibility =
+        getInstitutionCredibility(candidateUrl, config.institutions) ||
+        Math.max(0.68, Math.min(0.9, candidate.confidence ?? 0.72));
+
+      try {
+        await sourceOps.create({
+          artist_id: artistId,
+          url: candidateUrl,
+          institution,
+          credibility_score: credibility,
+          content_summary: candidate.title ?? '',
+        });
+        existingUrls.add(candidateUrl);
+        created++;
+      } catch {
+        // Ignore duplicates and transient insert issues.
+      }
+    }
+
+    return created;
+  }
+
+  private isStrongResearchCacheCandidate(candidate: {
+    pageUrl: string;
+    imageUrl?: string;
+    title?: string;
+    sourceDomain?: string;
+    confidence?: number;
+  }, artistName: string): boolean {
+    const normalizedPage = this.normalizeArtistName(candidate.pageUrl ?? '');
+    const normalizedTitle = this.normalizeArtistName(candidate.title ?? '');
+    const normalizedImage = this.normalizeArtistName(candidate.imageUrl ?? '');
+    const confidence = candidate.confidence ?? 0;
+
+    if (!candidate.pageUrl) {
+      return false;
+    }
+
+    if (this.isSocialLikeUrl(candidate.pageUrl)) {
+      return false;
+    }
+
+    if (!this.researchCandidateTargetsArtist(candidate, artistName)) {
+      return false;
+    }
+
+    const blockedSignals = [
+      'principais obras',
+      'principais tags',
+      'imagens',
+      'artista',
+      'artista visual',
+      'profile',
+      'perfil',
+      'galeria',
+      'gallery',
+      'leilao',
+      'leiloeiro',
+      'auction',
+    ];
+
+    if (blockedSignals.some((signal) => normalizedTitle.includes(signal) || normalizedPage.includes(signal))) {
+      return false;
+    }
+
+    const isEscritorioArtworkPage =
+      normalizedPage.includes('escritoriodearte com artista') &&
+      /-\d+$/.test(candidate.pageUrl.split('/').filter(Boolean).pop() ?? '');
+    const isHighResArtworkAsset =
+      normalizedImage.includes('escritoriodearte com quadro') &&
+      (normalizedImage.includes(' g jpg') ||
+        normalizedImage.includes(' g jpeg') ||
+        normalizedImage.includes(' g png') ||
+        normalizedImage.includes(' g webp'));
+
+    if (isEscritorioArtworkPage || isHighResArtworkAsset) {
+      return true;
+    }
+
+    return confidence >= 0.78;
+  }
+
+  private researchCandidateTargetsArtist(
+    candidate: {
+      pageUrl: string;
+      imageUrl?: string;
+      title?: string;
+      sourceDomain?: string;
+      confidence?: number;
+    },
+    artistName: string
+  ): boolean {
+    const normalizedArtist = this.normalizeArtistName(artistName);
+    if (!normalizedArtist) {
+      return false;
+    }
+
+    const haystack = this.normalizeArtistName(
+      `${candidate.pageUrl ?? ''} ${candidate.imageUrl ?? ''} ${candidate.title ?? ''}`
+    );
+    const tokens = normalizedArtist.split(' ').filter(Boolean);
+
+    if (tokens.length === 1) {
+      const token = tokens[0];
+      if (token.length < 6) {
+        return false;
+      }
+
+      return haystack.includes(token);
+    }
+
+    if (haystack.includes(normalizedArtist)) {
+      return true;
+    }
+
+    const surname = tokens[tokens.length - 1];
+    const distinctiveGiven = tokens.slice(0, -1).filter((token) => token.length >= 4);
+    if (!haystack.includes(surname)) {
+      return false;
+    }
+
+    return distinctiveGiven.length === 0 || distinctiveGiven.some((token) => haystack.includes(token));
   }
 
   private async getPendingReplacementRequests(): Promise<PendingReplacementRequest[]> {
@@ -1165,7 +1801,9 @@ export class WorkflowOrchestrator {
     return deduped;
   }
 
-  private async loadUniqueReadyPendingDrafts(): Promise<Array<Awaited<ReturnType<typeof draftOps.findReadyPendingDrafts>>[number]>> {
+  private async loadUniqueReadyPendingDrafts(
+    email: EmailModule
+  ): Promise<Array<Awaited<ReturnType<typeof draftOps.findReadyPendingDrafts>>[number]>> {
     const readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
     const dedupedDrafts = await this.pruneDuplicatePendingDraftsByArtistName(readyPendingDrafts);
     const historicallyUsedNames = await this.getPreviouslySentArtistNames();
@@ -1175,6 +1813,7 @@ export class WorkflowOrchestrator {
     for (const draft of dedupedDrafts) {
       const artist = await artistOps.findById(draft.artist_id);
       const normalizedName = artist?.full_name ? this.normalizeArtistName(artist.full_name) : '';
+      const artistMetadata = artistOps.parseMetadata(artist);
 
       if (
         normalizedName &&
@@ -1195,6 +1834,20 @@ export class WorkflowOrchestrator {
         continue;
       }
 
+      if (artistMetadata.editor_rejected) {
+        if (draft.id) {
+          try {
+            await draftOps.delete(draft.id);
+            this.logger.warn(
+              `Deleted stale pending draft ${draft.id} because artist ${artist?.full_name ?? draft.artist_id} was editor-rejected`
+            );
+          } catch (error) {
+            this.logger.warn(`Failed to delete editor-rejected pending draft ${draft.id}`, error);
+          }
+        }
+        continue;
+      }
+
       if (!this.isDraftEditoriallyReady(draft, artist?.full_name)) {
         if (draft.id) {
           try {
@@ -1209,10 +1862,259 @@ export class WorkflowOrchestrator {
         continue;
       }
 
+      const sendability = await email.assessDraftSendability({
+        draftId: draft.id!,
+        images: draft.parsedImages,
+        bypassDailyCap: true,
+      });
+
+      if (!sendability.sendable) {
+        if (draft.id) {
+          try {
+            await draftOps.delete(draft.id);
+            this.logger.warn(
+              `Deleted stale pending draft ${draft.id} because it was not actually sendable now: ${sendability.reason ?? 'unknown reason'}`
+            );
+          } catch (error) {
+            this.logger.warn(`Failed to delete unsendable pending draft ${draft.id}`, error);
+          }
+        }
+        continue;
+      }
+
+      draft.parsedImages = sendability.approvalReadyImages ?? draft.parsedImages;
       validDrafts.push(draft);
     }
 
     return validDrafts;
+  }
+
+  private isResearchCacheImportedArtist(artist: Artist): boolean {
+    const metadata = artistOps.parseMetadata(artist);
+    return Boolean(
+      metadata.research_cache_imported_at ||
+        metadata.research_cache_mined_at ||
+        metadata.curated
+    );
+  }
+
+  private async prehydrateVisualReadyArtists(
+    artists: Artist[],
+    visual: VisualModule,
+    limit: number
+  ): Promise<void> {
+    const ordered = await this.rankArtistsForVariety(artists);
+    let hydrated = 0;
+
+    for (const artist of ordered) {
+      if (hydrated >= limit) {
+        break;
+      }
+
+      const metadata = artistOps.parseMetadata(artist) as ArtistWorkflowMetadata;
+      if (this.getVisualReadyImagesFromMetadata(metadata).length >= MIN_APPROVAL_IMAGES) {
+        continue;
+      }
+
+      if (this.isArtistCoolingDown(artist)) {
+        continue;
+      }
+
+      try {
+        const result = await this.ensureArtistVisualReady(artist, visual, metadata);
+        hydrated += 1;
+        this.logger.info(
+          `Visual prepass for ${artist.full_name}: ${result.images.length} approval-ready image(s), state=${result.ready ? 'ready' : 'pending'}`
+        );
+      } catch (error) {
+        this.logger.warn(`Visual prepass failed for artist ${artist.full_name}`, error);
+      }
+    }
+  }
+
+  private async ensureArtistVisualReady(
+    artist: Artist,
+    visual: VisualModule,
+    metadataInput?: Record<string, unknown>
+  ): Promise<{ ready: boolean; images: Image[] }> {
+    const metadata = (metadataInput ?? artistOps.parseMetadata(artist)) as ArtistWorkflowMetadata;
+    const cachedReadyImages = this.getVisualReadyImagesFromMetadata(metadata);
+    if (cachedReadyImages.length >= MIN_APPROVAL_IMAGES) {
+      return {
+        ready: true,
+        images: cachedReadyImages.slice(0, MIN_APPROVAL_IMAGES),
+      };
+    }
+
+    const artistSources = await sourceOps.findByArtistId(artist.id!);
+    const images = await this.withTimeout(
+      visual.sourceImages(
+        {
+          full_name: artist.full_name,
+          visual_practice: artist.visual_practice ?? undefined,
+          birthplace_city: artist.birthplace_city ?? undefined,
+          birthplace_state: artist.birthplace_state ?? undefined,
+          artwork_candidates: Array.isArray(metadata.research_cache_artwork_candidates)
+            ? metadata.research_cache_artwork_candidates as Array<{
+                pageUrl: string;
+                imageUrl?: string;
+                title?: string;
+                sourceDomain?: string;
+                confidence?: number;
+              }>
+            : undefined,
+        },
+        artistSources,
+        0,
+        MIN_APPROVAL_IMAGES
+      ),
+      IMAGE_SOURCING_TIMEOUT_MS,
+      `Image sourcing timed out for artist ${artist.full_name}`
+    );
+
+    const approvalCheck = await visual.filterApprovalImages(
+      {
+        full_name: artist.full_name,
+        visual_practice: artist.visual_practice ?? undefined,
+        birthplace_city: artist.birthplace_city ?? undefined,
+        birthplace_state: artist.birthplace_state ?? undefined,
+      },
+      images
+    );
+    const approvedImages = approvalCheck.accepted.slice(0, MIN_APPROVAL_IMAGES);
+
+    const patch: ArtistWorkflowMetadata = {
+      visual_ready_last_attempt_at: new Date().toISOString(),
+      visual_ready_last_image_count: approvedImages.length,
+      visual_ready_failure_reason:
+        approvedImages.length >= MIN_APPROVAL_IMAGES
+          ? ''
+          : `Only ${approvedImages.length} approval-ready image(s) found`,
+    };
+
+    if (approvedImages.length >= MIN_APPROVAL_IMAGES) {
+      patch.visual_ready_state = 'ready';
+      patch.visual_ready_at = new Date().toISOString();
+      patch.visual_ready_images = approvedImages;
+      patch.visual_ready_failure_count = 0;
+      patch.visual_ready_blocked_until = '';
+    } else {
+      const currentFailures = Number(metadata.visual_ready_failure_count ?? 0) || 0;
+      patch.visual_ready_state = 'failed';
+      patch.visual_ready_images = [];
+      patch.visual_ready_failure_count = currentFailures + 1;
+      patch.visual_ready_blocked_until = this.buildCooldownIso(
+        currentFailures + 1 >= ARTIST_HARD_FAILURE_THRESHOLD
+          ? ARTIST_FAILURE_COOLDOWN_HOURS * 4
+          : ARTIST_FAILURE_COOLDOWN_HOURS
+      );
+    }
+
+    await artistOps.mergeMetadata(artist.id!, patch);
+
+    return {
+      ready: approvedImages.length >= MIN_APPROVAL_IMAGES,
+      images: approvedImages,
+    };
+  }
+
+  private getVisualReadyImagesFromMetadata(metadata: ArtistWorkflowMetadata): Image[] {
+    if (!Array.isArray(metadata.visual_ready_images)) {
+      return [];
+    }
+
+    return metadata.visual_ready_images.filter((image): image is Image => {
+      return Boolean(
+        image &&
+          typeof image === 'object' &&
+          typeof image.url === 'string' &&
+          typeof image.attribution === 'string'
+      );
+    });
+  }
+
+  private isArtistCoolingDown(artist: Artist): boolean {
+    const metadata = artistOps.parseMetadata(artist) as ArtistWorkflowMetadata;
+    const blockedUntilCandidates = [
+      metadata.visual_ready_blocked_until,
+      metadata.editorial_blocked_until,
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .map((value) => new Date(value).getTime())
+      .filter((value) => Number.isFinite(value));
+
+    if (blockedUntilCandidates.some((value) => value > Date.now())) {
+      return true;
+    }
+
+    const visualFailures = Number(metadata.visual_ready_failure_count ?? 0) || 0;
+    const editorialFailures = Number(metadata.editorial_failure_count ?? 0) || 0;
+    return visualFailures >= ARTIST_HARD_FAILURE_THRESHOLD * 2 || editorialFailures >= ARTIST_HARD_FAILURE_THRESHOLD * 2;
+  }
+
+  private buildCooldownIso(hours: number): string {
+    return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  }
+
+  private async bumpArtistFailureMetadata(
+    artistId: number,
+    kind: 'visual' | 'editorial',
+    reason: string,
+    workflowDate: string
+  ): Promise<void> {
+    const artist = await artistOps.findById(artistId);
+    const metadata = artistOps.parseMetadata(artist) as ArtistWorkflowMetadata;
+    const now = new Date().toISOString();
+
+    if (kind === 'visual') {
+      const failureCount = (Number(metadata.visual_ready_failure_count ?? 0) || 0) + 1;
+      await artistOps.mergeMetadata(artistId, {
+        visual_ready_state: 'failed',
+        visual_ready_failure_count: failureCount,
+        visual_ready_failure_reason: reason,
+        visual_ready_last_attempt_at: now,
+        visual_ready_blocked_until: this.buildCooldownIso(
+          failureCount >= ARTIST_HARD_FAILURE_THRESHOLD
+            ? ARTIST_FAILURE_COOLDOWN_HOURS * 4
+            : ARTIST_FAILURE_COOLDOWN_HOURS
+        ),
+        last_workflow_failure_at: now,
+        last_workflow_failure_date: workflowDate,
+        last_workflow_failure_reason: reason,
+      });
+      return;
+    }
+
+    const failureCount = (Number(metadata.editorial_failure_count ?? 0) || 0) + 1;
+    await artistOps.mergeMetadata(artistId, {
+      editorial_failure_count: failureCount,
+      editorial_failure_reason: reason,
+      editorial_failure_at: now,
+      editorial_blocked_until: this.buildCooldownIso(
+        failureCount >= ARTIST_HARD_FAILURE_THRESHOLD
+          ? ARTIST_FAILURE_COOLDOWN_HOURS * 2
+          : ARTIST_FAILURE_COOLDOWN_HOURS
+      ),
+      last_workflow_failure_at: now,
+      last_workflow_failure_date: workflowDate,
+      last_workflow_failure_reason: reason,
+    });
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private isDraftEditoriallyReady(
@@ -1240,6 +2142,24 @@ export class WorkflowOrchestrator {
     }
 
     return true;
+  }
+
+  private hasEditorialSourceDepth(sources: Awaited<ReturnType<typeof sourceOps.findByArtistId>>): boolean {
+    const eligibleSources = sources.filter(
+      (source) => !this.isSocialSource(source.url, source.institution)
+    );
+    const richSources = eligibleSources.filter(
+      (source) => (source.content_summary?.trim().length ?? 0) >= 320
+    );
+
+    if (richSources.length >= 2 && eligibleSources.length >= 3) {
+      return true;
+    }
+
+    const institutionalRichSources = richSources.filter(
+      (source) => (source.credibility_score ?? 0) >= 0.8
+    );
+    return institutionalRichSources.length >= 1 && richSources.length >= 2;
   }
 
   private shouldPersistDiscoveredSource(
@@ -1346,6 +2266,15 @@ export class WorkflowOrchestrator {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
   }
 
   private buildArtistNameVariants(name: string): string[] {
@@ -1481,6 +2410,41 @@ export class WorkflowOrchestrator {
     }
 
     return excluded;
+  }
+
+  private async resolveOutstandingApprovalDraft(email: EmailModule) {
+    const outstandingDraft = await draftOps.findOutstandingSent();
+    if (!outstandingDraft?.id) {
+      return null;
+    }
+
+    const draftWithImages = await draftOps.findByIdWithImages(outstandingDraft.id);
+    if (!draftWithImages) {
+      return null;
+    }
+
+    const sendability = await email.assessDraftSendability({
+      draftId: draftWithImages.id!,
+      images: draftWithImages.parsedImages,
+      bypassDailyCap: true,
+    });
+
+    if (sendability.sendable) {
+      return draftWithImages;
+    }
+
+    if (
+      sendability.reason?.includes('editor-rejected artist') ||
+      sendability.reason?.includes('rejected draft') ||
+      sendability.reason?.includes('already-published artist')
+    ) {
+      await draftOps.updateStatus(draftWithImages.id!, 'rejected');
+      this.logger.warn(
+        `Demoted stale sent draft ${draftWithImages.id} because it no longer counts as an active approval item: ${sendability.reason}`
+      );
+    }
+
+    return null;
   }
 
   private isNormalSendWindowOpen(appTimezone?: string): boolean {

@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.casca.daily-workflow</string>
+    <string>com.casca.research-miner</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-daily-wrapper.sh</string>
+        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-research-miner.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -17,14 +17,14 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <key>StartInterval</key>
-    <integer>60</integer>
+    <key>KeepAlive</key>
+    <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stdout.log</string>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/research-miner-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stderr.log</string>
+    <string>/Users/victoryves/casca-automation-blog-runner/logs/research-miner-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

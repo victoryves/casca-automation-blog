@@ -4,6 +4,15 @@ import { URL } from 'node:url';
 import approveHandler from '../api/webhook/approve.js';
 import rejectHandler from '../api/webhook/reject.js';
 import emailHandler from '../api/webhook/email.js';
+import { initDatabase } from '../src/db/local.js';
+import {
+  getDraftDetailSnapshot,
+  getDashboardSnapshot,
+  getMinedArtistDetailSnapshot,
+  renderDraftDetailHtml,
+  renderDashboardHtml,
+  renderMinedArtistDetailHtml,
+} from '../src/modules/dashboard/index.js';
 
 type QueryValue = string | string[] | undefined;
 
@@ -110,6 +119,57 @@ async function router(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (url.pathname === '/health') {
     response.status(200).json({ ok: true });
+    return;
+  }
+
+  if (url.pathname === '/dashboard' || url.pathname === '/') {
+    initDatabase();
+    const snapshot = await getDashboardSnapshot();
+    response.status(200).send(renderDashboardHtml(snapshot));
+    return;
+  }
+
+  if (url.pathname === '/api/dashboard') {
+    initDatabase();
+    const snapshot = await getDashboardSnapshot();
+    response.status(200).json(snapshot);
+    return;
+  }
+
+  if (url.pathname === '/dashboard/mined') {
+    initDatabase();
+    const artist = typeof request.query.artist === 'string' ? request.query.artist : '';
+    const snapshot = await getMinedArtistDetailSnapshot(artist);
+    if (!snapshot) {
+      response.status(404).send('Mined artist not found');
+      return;
+    }
+    response.status(200).send(renderMinedArtistDetailHtml(snapshot));
+    return;
+  }
+
+  if (url.pathname === '/dashboard/draft') {
+    initDatabase();
+    const draftIdRaw = typeof request.query.id === 'string' ? request.query.id : '';
+    const draftId = Number(draftIdRaw);
+    const snapshot = await getDraftDetailSnapshot(draftId);
+    if (!snapshot) {
+      response.status(404).send('Draft not found');
+      return;
+    }
+    response.status(200).send(renderDraftDetailHtml(snapshot));
+    return;
+  }
+
+  if (url.pathname === '/api/dashboard/mined') {
+    initDatabase();
+    const artist = typeof request.query.artist === 'string' ? request.query.artist : '';
+    const snapshot = await getMinedArtistDetailSnapshot(artist);
+    if (!snapshot) {
+      response.status(404).json({ error: 'Mined artist not found' });
+      return;
+    }
+    response.status(200).json(snapshot);
     return;
   }
 

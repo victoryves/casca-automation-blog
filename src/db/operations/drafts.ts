@@ -166,7 +166,7 @@ export const draftOps = {
     const rows = query.all<{ sent_at: string | null }>(
       `SELECT sent_at
        FROM drafts
-       WHERE status IN ('sent', 'approved') AND sent_at >= ?
+       WHERE sent_at IS NOT NULL AND sent_at >= ?
        ORDER BY sent_at DESC
        LIMIT 50`,
       [lookback]
@@ -176,6 +176,26 @@ export const draftOps = {
       if (!draft.sent_at) return false;
       return this.formatDateInTimezone(this.parseTimestamp(draft.sent_at), timezone) === today;
     });
+  },
+
+  async findOutstandingSent(): Promise<Draft | null> {
+    const row = query.get<Draft>(
+      `SELECT *
+       FROM drafts
+       WHERE status = 'sent'
+       ORDER BY sent_at DESC, created_at DESC
+       LIMIT 1`
+    );
+    return row ?? null;
+  },
+
+  async approvedExists(): Promise<boolean> {
+    const row = query.get<{ count: number }>(
+      `SELECT COUNT(*) as count
+       FROM drafts
+       WHERE status = 'approved'`
+    );
+    return (row?.count ?? 0) > 0;
   },
 
   /**

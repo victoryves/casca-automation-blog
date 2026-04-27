@@ -19,11 +19,13 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import traceback
 from typing import Iterable
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urlparse, urlencode
+from urllib.request import Request, urlopen
 
 
 DEFAULT_GOOGLE_SITE_FILTERS = [
@@ -53,6 +55,10 @@ BLOCKED_HOST_SNIPPETS = (
     "pinimg.com",
     "facebook.com",
     "instagram.com",
+    "threads.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
 )
 
 
@@ -236,15 +242,43 @@ def iter_google_fallback_matches(html: str) -> Iterable[dict]:
 
 
 def search_google(query: str, limit: int, options: dict | None = None) -> list[dict]:
-    from scrapling import StealthyFetcher
-
     options = options or {}
     site_filters = list(dict.fromkeys((options.get("siteFilters") or []) + DEFAULT_GOOGLE_SITE_FILTERS))
     artwork_only = bool(options.get("artworkOnly", True))
+    serpapi_configured = bool(os.getenv("SERPAPI_API_KEY", "").strip())
+    serpapi_images = search_serpapi(query, max(limit * 2, limit), options)
+    if serpapi_images:
+        deduped_serpapi: list[dict] = []
+        seen_serpapi: set[str] = set()
+        for image in serpapi_images:
+          if image["url"] in seen_serpapi:
+              continue
+          seen_serpapi.add(image["url"])
+          deduped_serpapi.append(image)
+        if len(deduped_serpapi) >= limit:
+            ranked_serpapi = sorted(
+                deduped_serpapi,
+                key=lambda item: score_google_candidate(item, site_filters),
+                reverse=True,
+            )
+            return ranked_serpapi[:limit]
+
+    if serpapi_configured:
+        print(
+            "[google] SerpAPI is configured but returned no usable images; skipping raw Google scrape fallback",
+            file=sys.stderr,
+        )
+        ranked = sorted(serpapi_images, key=lambda item: score_google_candidate(item, site_filters), reverse=True)
+        return ranked[:limit]
+
+    from scrapling import StealthyFetcher
+
     queries = build_google_queries(query, site_filters, artwork_only)
 
-    images: list[dict] = []
+    images: list[dict] = list(serpapi_images)
     seen_urls: set[str] = set()
+    for image in images:
+        seen_urls.add(image["url"])
 
     for variant in queries[:10]:
         if len(images) >= limit * 3:
@@ -276,6 +310,81 @@ def search_google(query: str, limit: int, options: dict | None = None) -> list[d
 
     ranked = sorted(images, key=lambda item: score_google_candidate(item, site_filters), reverse=True)
     return ranked[:limit]
+
+
+def search_serpapi(query: str, limit: int, options: dict | None = None) -> list[dict]:
+    api_key = os.getenv("SERPAPI_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    options = options or {}
+    site_filters = list(dict.fromkeys((options.get("siteFilters") or []) + DEFAULT_GOOGLE_SITE_FILTERS))
+    artwork_only = bool(options.get("artworkOnly", True))
+
+    base_query = query.strip()
+    if artwork_only:
+        base_query = (
+            f"{base_query} -poster -flyer -catalog -exhibition -artist "
+            "-portrait -interview -opening -installation"
+        )
+
+    filter_terms = " OR ".join(f"site:{site}" for site in site_filters[:5])
+    full_query = f"{base_query} ({filter_terms})" if filter_terms else base_query
+
+    params = {
+        "engine": "google_images",
+        "q": full_query,
+        "hl": "en",
+        "google_domain": "google.com",
+        "ijn": "0",
+        "api_key": api_key,
+    }
+
+    request = Request(
+        f"https://serpapi.com/search.json?{urlencode(params)}",
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=25) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[serpapi] Failed: {exc}", file=sys.stderr)
+        return []
+
+    results = payload.get("images_results") or []
+    images: list[dict] = []
+
+    for item in results:
+        url = item.get("original") or item.get("image") or item.get("thumbnail")
+        source_page = item.get("link") or item.get("source") or ""
+        title = item.get("title") or item.get("snippet") or "Google Images result"
+        width = int(item.get("original_width") or item.get("thumbnail_width") or 0)
+        height = int(item.get("original_height") or item.get("thumbnail_height") or 0)
+
+        if not url or not is_candidate_image_url(url, width, height):
+            continue
+
+        images.append(
+            build_result(
+                url,
+                title,
+                source_page,
+                width,
+                height,
+                engine="google",
+                pipeline="serpapi-google-images",
+            )
+        )
+
+        if len(images) >= max(limit * 2, limit):
+            break
+
+    print(f"[serpapi] Found {len(images)} images", file=sys.stderr)
+    return images
 
 
 def search_bing(query: str, limit: int, options: dict | None = None) -> list[dict]:

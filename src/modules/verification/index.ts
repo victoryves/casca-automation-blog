@@ -8,12 +8,13 @@
  */
 
 import { artistOps, sourceOps } from '../../db/operations/index.js';
+import { getConfig, getInstitutionCredibility } from '../../config/index.js';
 import type { VerificationResult, Artist, Source } from '../../types/index.js';
 
 export class VerificationModule {
-  private readonly MIN_SOURCES = 1; // Reduced from 2 to 1 for more flexibility
-  private readonly MIN_SOURCES_HIGH_CREDIBILITY = 1; // Only 1 source needed if credibility >= 0.9
-  private readonly MIN_CREDIBILITY = 0.5;
+  private readonly MIN_SOURCES = 2;
+  private readonly MIN_SOURCES_HIGH_CREDIBILITY = 1;
+  private readonly MIN_CREDIBILITY = 0.65;
 
   // Northeast Brazil states
   private readonly NORTHEAST_STATES = [
@@ -26,6 +27,18 @@ export class VerificationModule {
     'Piauí',
     'Rio Grande do Norte',
     'Sergipe',
+  ];
+
+  private readonly NORTHEAST_STATE_CODES = [
+    'AL',
+    'BA',
+    'CE',
+    'MA',
+    'PB',
+    'PE',
+    'PI',
+    'RN',
+    'SE',
   ];
 
   // Terms that indicate this is NOT a person (exhibitions, institutions, etc.)
@@ -91,21 +104,31 @@ export class VerificationModule {
     // Check 1: Minimum number of sources (flexible based on credibility)
     const highCredibilitySources = sources.filter((s) => s.credibility_score >= 0.9);
     const credibleSources = sources.filter((s) => s.credibility_score >= this.MIN_CREDIBILITY);
+    const institutionalSources = sources.filter((source) => this.isInstitutionalSource(source));
+    const premiumInstitutionalSources = institutionalSources.filter(
+      (source) => this.getInstitutionalCredibility(source.url) >= 0.9
+    );
 
-    // Accept if: 1+ high credibility source OR 2+ credible sources
+    // Accept only when there is institutional support, not just marketplace/index coverage.
     const hasEnoughSources =
-      highCredibilitySources.length >= this.MIN_SOURCES_HIGH_CREDIBILITY ||
-      credibleSources.length >= 2;
+      premiumInstitutionalSources.length >= this.MIN_SOURCES_HIGH_CREDIBILITY ||
+      (institutionalSources.length >= 1 && credibleSources.length >= this.MIN_SOURCES);
 
     if (!hasEnoughSources) {
       verified = false;
       reasons.push(
-        `Insufficient sources (${sources.length} total, ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`
+        `Insufficient institutional support (${sources.length} total, ${institutionalSources.length} institutional, ${premiumInstitutionalSources.length} premium institutional, ${credibleSources.length} credible)`
       );
-      console.log(`  ✗ Insufficient sources: need 1 high-credibility (0.9+) OR 2+ credible (0.5+)`);
-      console.log(`    Got: ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible`);
+      console.log(`  ✗ Insufficient sources: need 1 premium institutional source (0.9+) OR 1+ institutional + 2+ credible`);
+      console.log(`    Got: ${institutionalSources.length} institutional, ${premiumInstitutionalSources.length} premium institutional, ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible`);
     } else {
-      console.log(`  ✓ Sources: ${sources.length} (${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`);
+      console.log(`  ✓ Sources: ${sources.length} (${institutionalSources.length} institutional, ${premiumInstitutionalSources.length} premium institutional, ${highCredibilitySources.length} high-credibility, ${credibleSources.length} credible)`);
+    }
+
+    if (verified && this.requiresPremiumInstitutionalSupport(artist, sources) && premiumInstitutionalSources.length === 0) {
+      verified = false;
+      reasons.push('Artist profile requires premium institutional validation, but none was found');
+      console.log('  ✗ Weak-profile artist without premium institutional support');
     }
 
     // Check 3: Northeast Brazil origin (check sources if state is unknown)
@@ -155,9 +178,14 @@ export class VerificationModule {
       console.log(`  ❌ REJECTED: ${reasons.join('; ')}`);
     }
 
+    const refreshedArtist = await artistOps.findById(artistId);
+    if (!refreshedArtist) {
+      throw new Error(`Artist ${artistId} disappeared after verification`);
+    }
+
     return {
       verified,
-      artist: await artistOps.findById(artistId)!, // Re-fetch with updated status
+      artist: refreshedArtist,
       sources,
       reasons,
     };
@@ -186,6 +214,13 @@ export class VerificationModule {
     }
 
     return false;
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
   }
 
   /**
@@ -272,11 +307,24 @@ export class VerificationModule {
    * Check if artist is from Northeast Brazil
    */
   private isFromNortheast(artist: Artist): boolean {
-    if (!artist.birthplace_state) return false;
+    const normalizedState = this.normalizeText(artist.birthplace_state ?? '');
+    if (!normalizedState) return false;
 
-    return this.NORTHEAST_STATES.some((state) =>
-      artist.birthplace_state!.toLowerCase().includes(state.toLowerCase())
-    );
+    if (
+      this.NORTHEAST_STATES.some((state) =>
+        normalizedState.includes(this.normalizeText(state))
+      )
+    ) {
+      return true;
+    }
+
+    const tokens = normalizedState
+      .replace(/[^a-z/,\s]+/g, ' ')
+      .split(/[\s,/]+/)
+      .map((token) => token.trim().toUpperCase())
+      .filter(Boolean);
+
+    return tokens.some((token) => this.NORTHEAST_STATE_CODES.includes(token));
   }
 
   /**
@@ -369,5 +417,41 @@ export class VerificationModule {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isInstitutionalSource(source: Source): boolean {
+    return this.getInstitutionalCredibility(source.url) >= 0.85;
+  }
+
+  private getInstitutionalCredibility(url: string): number {
+    return getInstitutionCredibility(url, getConfig().institutions);
+  }
+
+  private requiresPremiumInstitutionalSupport(artist: Artist, sources: Source[]): boolean {
+    const normalizedPractice = (artist.visual_practice ?? '').toLowerCase();
+    const fragilePractice =
+      normalizedPractice.includes('arte urbana') ||
+      normalizedPractice.includes('street art') ||
+      normalizedPractice.includes('grafite') ||
+      normalizedPractice.includes('graffiti') ||
+      normalizedPractice.includes('quadrinho') ||
+      normalizedPractice.includes('hq') ||
+      normalizedPractice.includes('comic') ||
+      normalizedPractice.includes('digital') ||
+      normalizedPractice.includes('ilustração') ||
+      normalizedPractice.includes('illustration');
+
+    if (fragilePractice) {
+      return true;
+    }
+
+    const allContent = sources.map((source) => (source.content_summary ?? '').toLowerCase()).join(' ');
+    return (
+      allContent.includes('street art') ||
+      allContent.includes('arte urbana') ||
+      allContent.includes('graffiti') ||
+      allContent.includes('digital art') ||
+      allContent.includes('illustration')
+    );
   }
 }

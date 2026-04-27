@@ -11,11 +11,12 @@ import { draftOps, artistOps, sourceOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
 import { PublicationHistoryModule } from '../publication-history/index.js';
 import { VisualModule } from '../visual/index.js';
-import type { Draft, Image, EmailTemplate } from '../../types/index.js';
+import type { Artist, Draft, Image, EmailTemplate } from '../../types/index.js';
 
 export interface SendApprovalEmailOptions {
   draftId: number;
   images?: Image[];
+  bypassDailyCap?: boolean;
 }
 
 interface PreparedAttachment {
@@ -29,6 +30,14 @@ interface PreparedAttachment {
 interface PreparedImageOption {
   image: Image;
   attachment: PreparedAttachment;
+}
+
+export interface DraftSendabilityAssessment {
+  sendable: boolean;
+  reason?: string;
+  draft?: Draft;
+  artist?: Artist;
+  approvalReadyImages?: Image[];
 }
 
 const TARGET_APPROVAL_IMAGES = 3;
@@ -48,29 +57,7 @@ export class EmailModule {
    */
   async sendApprovalEmail(options: SendApprovalEmailOptions): Promise<void> {
     const config = getConfig();
-    const draft = await draftOps.findById(options.draftId);
-
-    if (!draft) {
-      throw new Error(`Draft ${options.draftId} not found`);
-    }
-
-    const artist = await artistOps.findById(draft.artist_id);
-    if (!artist) {
-      throw new Error(`Artist ${draft.artist_id} not found`);
-    }
-
-    await this.assertArtistNotPreviouslyPublished(artist.full_name);
-
-    const existingDrafts = await draftOps.findByArtistId(draft.artist_id);
-    const activeSentDraft = existingDrafts.find(
-      (existingDraft) => existingDraft.id !== options.draftId && existingDraft.status === 'sent'
-    );
-
-    if (activeSentDraft) {
-      throw new Error(
-        `Refusing to send duplicate approval email: draft ${activeSentDraft.id} is already in sent status for artist ${draft.artist_id}`
-      );
-    }
+    const { draft, artist, approvalReadyImages } = await this.preflightDraftSendability(options);
 
     console.log(`\n📧 Sending approval email for: ${draft.title}`);
 
@@ -88,36 +75,6 @@ export class EmailModule {
       let attachments: PreparedAttachment[] = [];
       let successfulImages: Image[] = [];
       let preparedImageOptions: PreparedImageOption[] = [];
-
-      if (!options.images || options.images.length < MIN_APPROVAL_IMAGES) {
-        throw new Error(
-          `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} images`
-        );
-      }
-
-      const visual = new VisualModule(config.env.geminiApiKey);
-      const approvalCheck = await visual.filterApprovalImages(
-        {
-          full_name: artist.full_name,
-          visual_practice: artist.visual_practice ?? undefined,
-          birthplace_city: artist.birthplace_city ?? undefined,
-          birthplace_state: artist.birthplace_state ?? undefined,
-        },
-        options.images
-      );
-
-      if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
-        const reasons = approvalCheck.rejected
-          .slice(0, 3)
-          .map((item) => item.reason)
-          .filter(Boolean)
-          .join(' | ');
-        throw new Error(
-          `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} approval-ready images${reasons ? `: ${reasons}` : ''}`
-        );
-      }
-
-      const approvalReadyImages = approvalCheck.accepted.slice(0, TARGET_APPROVAL_IMAGES);
 
       if (approvalReadyImages.length > 0) {
         console.log(`  Downloading ${approvalReadyImages.length} approval-ready images...`);
@@ -176,6 +133,124 @@ export class EmailModule {
         `Email sending failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  async assessDraftSendability(
+    options: SendApprovalEmailOptions
+  ): Promise<DraftSendabilityAssessment> {
+    try {
+      const preflight = await this.preflightDraftSendability(options);
+      return {
+        sendable: true,
+        draft: preflight.draft,
+        artist: preflight.artist,
+        approvalReadyImages: preflight.approvalReadyImages,
+      };
+    } catch (error) {
+      return {
+        sendable: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async preflightDraftSendability(options: SendApprovalEmailOptions): Promise<{
+    draft: Draft;
+    artist: Artist;
+    approvalReadyImages: Image[];
+  }> {
+    const config = getConfig();
+    const draft = await draftOps.findById(options.draftId);
+
+    if (!draft) {
+      throw new Error(`Draft ${options.draftId} not found`);
+    }
+
+    if (draft.status === 'rejected') {
+      throw new Error(
+        `Refusing to send approval email for rejected draft ${options.draftId}`
+      );
+    }
+
+    const artist = await artistOps.findById(draft.artist_id);
+    if (!artist) {
+      throw new Error(`Artist ${draft.artist_id} not found`);
+    }
+
+    const artistMetadata = artistOps.parseMetadata(artist);
+    if (artistMetadata.editor_rejected) {
+      throw new Error(
+        `Refusing to send approval email for editor-rejected artist ${artist.full_name}`
+      );
+    }
+
+    await this.assertArtistNotPreviouslyPublished(artist.full_name);
+
+    const existingDrafts = await draftOps.findByArtistId(draft.artist_id);
+    const activeSentDraft = existingDrafts.find(
+      (existingDraft) => existingDraft.id !== options.draftId && existingDraft.status === 'sent'
+    );
+
+    if (activeSentDraft) {
+      throw new Error(
+        `Refusing to send duplicate approval email: draft ${activeSentDraft.id} is already in sent status for artist ${draft.artist_id}`
+      );
+    }
+
+    const alreadySentToday = await this.emailSentToday();
+    if (alreadySentToday && !options.bypassDailyCap) {
+      throw new Error(
+        'Refusing to send approval email because the daily hard cap has already been reached for today'
+      );
+    }
+
+    const resolvedImages =
+      options.images ??
+      (draft.images ? (JSON.parse(draft.images) as Image[]) : []);
+
+    if (resolvedImages.length < MIN_APPROVAL_IMAGES) {
+      throw new Error(
+        `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} images`
+      );
+    }
+
+    const visual = new VisualModule(config.env.geminiApiKey);
+    const approvalCheck = await visual.filterApprovalImages(
+      {
+        full_name: artist.full_name,
+        visual_practice: artist.visual_practice ?? undefined,
+        birthplace_city: artist.birthplace_city ?? undefined,
+        birthplace_state: artist.birthplace_state ?? undefined,
+      },
+      resolvedImages
+    );
+
+    if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
+      const reasons = approvalCheck.rejected
+        .slice(0, 3)
+        .map((item) => item.reason)
+        .filter(Boolean)
+        .join(' | ');
+      throw new Error(
+        `Refusing to send approval email with fewer than ${MIN_APPROVAL_IMAGES} approval-ready images${reasons ? `: ${reasons}` : ''}`
+      );
+    }
+
+    const approvalReadyImages = approvalCheck.accepted.slice(0, TARGET_APPROVAL_IMAGES);
+    const ownershipMismatches = approvalReadyImages.filter(
+      (image) => !this.imageOwnershipMatchesArtist(image, artist.full_name)
+    );
+    if (ownershipMismatches.length > 0) {
+      throw new Error(
+        `Refusing to send approval email because ${ownershipMismatches.length} image(s) do not convincingly match artist ownership`
+      );
+    }
+
+    return {
+      draft,
+      artist,
+      approvalReadyImages,
+    };
   }
 
   private async assertArtistNotPreviouslyPublished(artistName: string): Promise<void> {
@@ -249,6 +324,32 @@ export class EmailModule {
       .replace(/[^\p{L}\p{N}]+/gu, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  private imageOwnershipMatchesArtist(image: Image, artistName: string): boolean {
+    const haystack = this.normalizeArtistName(`${image.url} ${image.caption ?? ''} ${image.attribution ?? ''}`);
+    const normalizedArtist = this.normalizeArtistName(artistName);
+    if (!normalizedArtist) {
+      return false;
+    }
+
+    if (haystack.includes(normalizedArtist)) {
+      return true;
+    }
+
+    const tokens = normalizedArtist.split(' ').filter((token) => token.length >= 4);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    if (tokens.length === 1) {
+      return tokens[0].length >= 6 && haystack.includes(tokens[0]);
+    }
+
+    const surname = tokens[tokens.length - 1];
+    const givenNames = tokens.slice(0, -1).filter((token) => token.length >= 4);
+
+    return haystack.includes(surname) && (givenNames.length === 0 || givenNames.some((token) => haystack.includes(token)));
   }
 
   /**
@@ -509,11 +610,10 @@ export class EmailModule {
 
       // Check if we should insert an image after this part
       if (imageIndex < positions.length && i === positions[imageIndex]) {
-        const img = images[imageIndex];
         result += `
 
 <p style="text-align: center; margin: 2.5em 0; font-family: 'Courier New', Courier, monospace !important; line-height: 1.4;">
-[Imagem do Anexo ${imageIndex + 1} - ${img.attribution}]
+[Imagem do Anexo ${imageIndex + 1}]
 </p>
 `;
         imageIndex++;

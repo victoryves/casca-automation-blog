@@ -22,6 +22,36 @@ export class SynthesisModule {
   private readonly minWordCount = 450;
   private readonly maxWordCount = 700;
   private readonly maxParagraphs = 4;
+  private readonly editorialBlockedDomains = [
+    'artsy.net',
+    'mutualart.com',
+    'dailyartfair.com',
+  ];
+  private readonly junkSourcePatterns = [
+    'skip to main content',
+    'artists recommendation',
+    'get the app',
+    'find the art you love',
+    'works our curators love',
+    'be alerted about new artworks',
+    'stay connected with galleries',
+    'build your art world profile',
+    'keep track of your collection',
+    'keep track of artists markets',
+    'forgot your password',
+    'not a member yet',
+    'join us',
+    'log in',
+    'login',
+    'sign up',
+    'shows',
+    'galleries',
+    'artworks',
+    'buy',
+    'follow your favorite artists',
+    'download on the app store',
+    'google play',
+  ];
 
   constructor(apiKey: string) {
     this.client = new GeminiClient(apiKey);
@@ -94,9 +124,10 @@ export class SynthesisModule {
   private async generateArticle(artist: Artist, sources: Source[]): Promise<ArticleStructure> {
     const config = getConfig();
     const prompt = config.prompts.article_generation;
+    const editorialSources = this.filterEditorialSources(sources);
 
     // Prepare source context
-    const sourceContext = sources
+    const sourceContext = editorialSources
       .map((source, idx) => {
         return `Source ${idx + 1} (${source.institution}, credibility: ${source.credibility_score}):\nURL: ${source.url}\n${this.extractRelevantSourceExcerpt(source, artist) ?? 'No summary available'}\n`;
       })
@@ -149,7 +180,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
         console.warn(
           `  ⚠ Gemini still returned a short article (${this.wordCount(article.content)} words). Expanding with source excerpts.`
         );
-        article = this.expandWithSources(article, artist, sources);
+        article = this.expandWithSources(article, artist, editorialSources);
       }
 
       article = this.enforceLengthAndParagraphs(article);
@@ -158,7 +189,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
         console.warn(
           `  ⚠ Generated article remained below minimum length after retries (${this.wordCount(article.content)} words). Falling back to deterministic article generation.`
         );
-        article = this.buildFallbackArticle(artist, sources);
+        article = this.buildFallbackArticle(artist, editorialSources.length > 0 ? editorialSources : sources);
       }
 
       return article;
@@ -171,7 +202,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       }
       console.error('Gemini API error:', error);
       console.warn('Falling back to deterministic article generation');
-      return this.buildFallbackArticle(artist, sources);
+      return this.buildFallbackArticle(artist, editorialSources.length > 0 ? editorialSources : sources);
     }
   }
 
@@ -346,9 +377,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       return article;
     }
 
-    const additionalParagraphs = excerpts.map((item) => {
-      return `From ${item.institution}, the record highlights: ${item.excerpt.trim()}`;
-    });
+    const additionalParagraphs = excerpts.map((item) => item.excerpt.trim());
 
     const expandedContent = [
       article.content.trim(),
@@ -467,6 +496,28 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     return filtered.length > 0 ? filtered : sources;
   }
 
+  private filterEditorialSources(sources: Source[]): Source[] {
+    const editorial = sources.filter((source) => this.isEditorialSourceAllowed(source));
+    return editorial.length > 0 ? editorial : sources.filter((source) => !this.looksLikeJunkSummary(source.content_summary));
+  }
+
+  private isEditorialSourceAllowed(source: Source): boolean {
+    const domain = this.safeDomain(source.url);
+    if (!domain) {
+      return false;
+    }
+
+    if (this.editorialBlockedDomains.some((blocked) => domain === blocked || domain.endsWith(`.${blocked}`))) {
+      return false;
+    }
+
+    if (this.looksLikeJunkSummary(source.content_summary)) {
+      return false;
+    }
+
+    return (source.credibility_score ?? 0) >= 0.75;
+  }
+
   private isSourceRelevantToArtist(source: Source, artist: Artist): boolean {
     const normalizedArtistName = this.normalizeText(artist.full_name);
     const haystack = this.normalizeText(
@@ -496,7 +547,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
   }
 
   private extractRelevantSourceExcerpt(source: Source, artist: Artist): string | null {
-    const summary = source.content_summary?.trim();
+    const summary = this.sanitizeSourceSummary(source.content_summary);
     if (!summary) {
       return null;
     }
@@ -573,5 +624,76 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase();
+  }
+
+  private sanitizeSourceSummary(value: string | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const paragraphs = value
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+      .filter((paragraph) => paragraph.length >= 60)
+      .filter((paragraph) => !this.looksLikeJunkSummary(paragraph));
+
+    if (paragraphs.length > 0) {
+      return paragraphs.slice(0, 3).join('\n\n').trim();
+    }
+
+    const cleaned = value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => line.length >= 40)
+      .filter((line) => !this.looksLikeJunkSummary(line))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return cleaned.length >= 80 ? cleaned : null;
+  }
+
+  private looksLikeJunkSummary(value: string | undefined): boolean {
+    if (!value) {
+      return true;
+    }
+
+    const normalized = this.normalizeText(value);
+    const hitCount = this.junkSourcePatterns.filter((pattern) => normalized.includes(pattern)).length;
+
+    if (hitCount >= 2) {
+      return true;
+    }
+
+    if (normalized.includes('skip to main content')) {
+      return true;
+    }
+
+    if (/(^|\s)(login|log in|sign up|join us|buy)(\s|$)/.test(normalized) && value.length < 900) {
+      return true;
+    }
+
+    const shortNavLines = value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => line.length <= 24);
+
+    if (shortNavLines.length >= 6) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private safeDomain(url: string): string | null {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      return null;
+    }
   }
 }

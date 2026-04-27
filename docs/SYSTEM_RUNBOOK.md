@@ -66,7 +66,11 @@ These rules are product requirements, not preferences.
 - [scripts/run-daily.ts](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-daily.ts)
   CLI entrypoint with execution lock support.
 - [scripts/run-daily-wrapper.sh](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-daily-wrapper.sh)
-  Long-running retry wrapper for scheduled execution.
+  Compatibility wrapper that delegates to the hydrator worker.
+- [scripts/run-draft-hydrator.sh](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-draft-hydrator.sh)
+  Continuous worker that sends the daily approval email and keeps the ready queue hydrated.
+- [scripts/run-research-miner.sh](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/scripts/run-research-miner.sh)
+  Continuous worker that keeps mining reliable artists into the cumulative research cache.
 
 ### Database
 
@@ -99,7 +103,7 @@ Operational meaning:
 
 The system should continuously work toward two simultaneous targets:
 
-- `TARGET_READY_PENDING_DRAFTS = 5`
+- `TARGET_READY_PENDING_DRAFTS = 50`
 - `TARGET_NEW_DRAFTS_PER_DAY = 5`
 
 These are currently defined in [src/orchestrator/workflow.ts](/Users/victoryves/Documents/personal/Vibe%20Coding/casca-automation-blog/src/orchestrator/workflow.ts).
@@ -111,6 +115,7 @@ This means the system should not stop after one article. It should keep preparin
 The normal send window starts at:
 
 - `NORMAL_SEND_HOUR = 5`
+- the system sends one approval email per day at 5am local time, but keeps replenishing the backlog throughout the day
 
 The orchestrator should send one approval email after 05:00 local time if a valid ready draft exists and no daily approval email has already been sent.
 
@@ -199,6 +204,55 @@ The workflow now applies an explicit editorial-readiness check before a `pending
 
 This matters because the queue was previously getting poisoned by drafts that technically existed in SQLite but were not truly sendable.
 
+### Source Hygiene Gate
+
+Editorial text must never be built from marketplace or navigation junk.
+
+The synthesis layer now treats some sources as discovery-only, not prose-worthy:
+
+- `artsy.net`
+- `mutualart.com`
+- `dailyartfair.com`
+
+If a fetched summary looks like navigation, login, app-install, or marketplace boilerplate, it is discarded before it can enter:
+
+- Gemini prompt context
+- deterministic source expansion
+- final article body
+
+Examples of banned contamination patterns:
+
+- `Skip to Main Content`
+- `Get the app`
+- `Artists Recommendation`
+- `Log in`
+- `Join us`
+- `Buy`
+
+This rule exists because earlier runs produced weak prose by injecting scraped UI text directly into the article.
+
+### Discovery Quality Gate
+
+Discovery is now stricter about what counts as a meaningful source:
+
+- institutional domains are preferred for discovery and verification
+- Artsy / MutualArt / DailyArtFair are no longer allowed to carry verification by themselves
+- direct guessed URLs for unreliable Google Arts entity pages were removed from the fast-path because they created noise and slow failures
+
+If an artist only has blocked marketplace-style sources, that artist should not stay in the verified queue.
+
+### Weak-Profile Artist Rule
+
+Some practices need stronger proof before they are allowed into the editorial queue, especially when the web is noisy:
+
+- street art / `arte urbana`
+- graffiti
+- comics / `quadrinhos`
+- digital art
+- illustration-only profiles
+
+For these profiles, premium institutional support is required. Without it, the artist must fail verification rather than slipping through on weak discovery pages.
+
 ## Current Hard Guards Against Regression
 
 ### Concurrency Guard
@@ -220,6 +274,7 @@ The rejection webhook now:
 - tries to send a ready pending draft immediately
 - falls back to emergency replacement only if needed
 - queues a locked background replenishment run
+- if a replacement request is still pending, the main workflow now bypasses the normal 5am-only send window and the daily approval cap so the next article can be sent immediately after a rejection
 
 Relevant file:
 
@@ -348,6 +403,32 @@ Fixes applied:
 - discovery fallback logic loosened
 - over-aggressive daily-failure filtering removed from key paths
 - web query set tightened toward artwork-specific searches
+- a new persistent research cache was added so shortlist artists can be pre-mined before they are needed for synthesis
+- each pre-mined entry now stores biography sources, 3 to 5 candidate artwork URLs, and repetition status
+- this cache lives at `data/artist-research-cache.json` and is populated by `npm run pre-mine-shortlist -- --limit 20`
+- the dedicated `research miner` worker now runs shortlist pre-mining continuously so research accumulates even before a full draft is synthesized
+- the workflow now imports eligible cache entries back into the SQLite pipeline, verifies them in batch, and only falls back to generic internet discovery after exhausting the pre-mined shortlist layer
+- `escritoriodearte.com` is explicitly treated as an institutional source so curated artist pages count during verification instead of being ignored
+
+## Dual 24/7 Miners
+
+The automation now runs in two independent lanes:
+
+1. `research miner`
+   keeps accumulating reliable artists, biography sources, and artwork candidates in the cumulative cache.
+2. `draft hydrator`
+   keeps converting reliable artists into fully-ready drafts with text plus validated images and sends the daily 05:00 approval email.
+
+Operational details:
+
+- `logs/runtime/research-miner-status.json` stores the live heartbeat for the cache miner
+- `logs/runtime/draft-hydrator-status.json` stores the live heartbeat for the draft hydrator
+- the dashboard reads both files and shows them in the `24/7 Workers` section
+- `com.casca.daily-workflow.plist` keeps the hydrator alive continuously
+- `com.casca.research-miner.plist` keeps the research miner alive continuously
+- the hydrator now runs `cache-only`, so new drafts are generated only from artists that already passed the research-cache funnel
+- `scripts/run-daily.ts` now writes a JSON lock with `startedAt` and `heartbeatAt`, and stale locks are terminated automatically
+- `SERPAPI_API_KEY` can be added to improve Google Images acquisition without depending entirely on scrape-based Google results
 
 ### Failure Mode 5: Documentation Drift
 
