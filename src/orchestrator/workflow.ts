@@ -13,7 +13,7 @@ import { DiscoveryModule } from '../modules/discovery/index.js';
 import { VerificationModule } from '../modules/verification/index.js';
 import { SynthesisModule } from '../modules/synthesis/index.js';
 import { VisualModule } from '../modules/visual/index.js';
-import { EmailModule } from '../modules/email/index.js';
+import { Dispatcher, EmailModule } from '../modules/email/index.js';
 import { EmergencyFallbackModule } from '../modules/emergency/index.js';
 import { PublishingModule } from '../modules/publishing/index.js';
 import { PublicationHistoryModule } from '../modules/publication-history/index.js';
@@ -113,11 +113,12 @@ export class WorkflowOrchestrator {
       initDatabase();
 
       // Initialize modules
-      const discovery = new DiscoveryModule(config.env.tavilyApiKey);
+      const discovery = new DiscoveryModule(config.env.exaApiKey);
       const verification = new VerificationModule();
       const synthesis = new SynthesisModule(config.env.geminiApiKey);
       const visual = new VisualModule(config.env.geminiApiKey);
       const email = new EmailModule(config.env.resendApiKey);
+      const dispatcher = new Dispatcher(email);
       const emergencyFallback = new EmergencyFallbackModule();
       const pendingReplacementRequests = await this.getPendingReplacementRequests();
       const hasPendingReplacementRequest = pendingReplacementRequests.length > 0;
@@ -133,7 +134,6 @@ export class WorkflowOrchestrator {
         ...(await this.getOpenDraftArtistNames()),
       ]);
       let readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
-      let readyPendingDraft = readyPendingDrafts[0] ?? null;
       let readyPendingCount = readyPendingDrafts.length;
       let draftsCreatedToday = await draftOps.countCreatedOnDate(
         state.date,
@@ -189,106 +189,40 @@ export class WorkflowOrchestrator {
         sendStillNeeded = true;
       }
 
-      if (readyPendingDraft && sendStillNeeded) {
-        while (readyPendingDraft && sendStillNeeded) {
-          this.logger.info(`Validating prepared draft ${readyPendingDraft.id} before sending`);
-          const preparedArtist = await artistOps.findById(readyPendingDraft.artist_id);
-          if (!preparedArtist) {
-            await draftOps.delete(readyPendingDraft.id!);
-            this.logger.warn(`Discarded draft ${readyPendingDraft.id} because artist was missing`);
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
-            readyPendingDraft = readyPendingDrafts[0] ?? null;
-            readyPendingCount = readyPendingDrafts.length;
-            continue;
+      if (readyPendingDrafts.length > 0 && sendStillNeeded) {
+        this.logger.info(
+          `Dispatcher send window open with ${readyPendingDrafts.length} READY draft(s) available`
+        );
+
+        const dispatchResult = await dispatcher.sendNextAvailable(hasPendingReplacementRequest);
+        if (dispatchResult.sent) {
+          state.email_sent = true;
+          state.artist_id = dispatchResult.artistId;
+          state.draft_id = dispatchResult.draftId;
+          state.status = 'awaiting_approval';
+          emailSentToday = true;
+          outstandingApprovalDraft = await this.resolveOutstandingApprovalDraft(email);
+          sendStillNeeded = false;
+
+          if (dispatchResult.artistName) {
+            blockedArtistNames.add(this.normalizeArtistName(dispatchResult.artistName));
           }
 
-          if (!this.isDraftEditoriallyReady(readyPendingDraft, preparedArtist.full_name)) {
-            await draftOps.delete(readyPendingDraft.id!);
-            this.logger.warn(
-              `Discarded draft ${readyPendingDraft.id} because the article was not editorially ready`
-            );
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
-            readyPendingDraft = readyPendingDrafts[0] ?? null;
-            readyPendingCount = readyPendingDrafts.length;
-            continue;
-          }
-
-          const approvalCheck = await visual.filterApprovalImages(
-            {
-              full_name: preparedArtist.full_name,
-              visual_practice: preparedArtist.visual_practice ?? undefined,
-              birthplace_city: preparedArtist.birthplace_city ?? undefined,
-              birthplace_state: preparedArtist.birthplace_state ?? undefined,
-            },
-            readyPendingDraft.parsedImages
-          );
-
-          if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
-            await draftOps.delete(readyPendingDraft.id!);
-            await this.recordFailedArtistForDate(preparedArtist.full_name, state.date);
-            this.logger.warn(
-              `Discarded draft ${readyPendingDraft.id} because only ${approvalCheck.accepted.length} approval-ready image(s) remained`
-            );
-            readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
-            readyPendingDraft = readyPendingDrafts[0] ?? null;
-            readyPendingCount = readyPendingDrafts.length;
-            continue;
-          }
-
-          if (approvalCheck.accepted.length !== readyPendingDraft.parsedImages.length) {
-            await draftOps.updateImages(readyPendingDraft.id!, approvalCheck.accepted);
-            readyPendingDraft.parsedImages = approvalCheck.accepted;
-          }
-
-          this.logger.info(`Sending already-prepared draft ${readyPendingDraft.id}`);
-          try {
-            await email.sendApprovalEmail({
-              draftId: readyPendingDraft.id!,
-              images: readyPendingDraft.parsedImages,
-              bypassDailyCap: hasPendingReplacementRequest,
-            });
-
-            state.email_sent = true;
-            state.artist_id = readyPendingDraft.artist_id;
-            state.draft_id = readyPendingDraft.id;
-            state.status = 'awaiting_approval';
-            emailSentToday = true;
-            outstandingApprovalDraft = await this.resolveOutstandingApprovalDraft(email);
-            sendStillNeeded = false;
-            blockedArtistNames.add(this.normalizeArtistName(preparedArtist.full_name));
-          } catch (preparedDraftError) {
-            const message =
-              preparedDraftError instanceof Error
-                ? preparedDraftError.message
-                : String(preparedDraftError);
-
-            const isStalePreparedDraft =
-              message.includes('validated images') ||
-              message.includes('fewer than') ||
-              message.includes('duplicate approval email');
-
-            if (!isStalePreparedDraft) {
-              throw preparedDraftError;
-            }
-
-            this.logger.warn(
-              `Discarding stale prepared draft ${readyPendingDraft.id} after send failure: ${message}`
-            );
-            await draftOps.delete(readyPendingDraft.id!);
-          }
-
-          readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
-          readyPendingDraft = readyPendingDrafts[0] ?? null;
-          readyPendingCount = readyPendingDrafts.length;
-
-          if (state.email_sent && pendingReplacementRequests.length > 0) {
+          if (pendingReplacementRequests.length > 0) {
             const oldestPendingRequest = pendingReplacementRequests[0];
             await this.clearPendingReplacementRequest(oldestPendingRequest.logId);
             this.logger.info(
               `Cleared pending replacement request log ${oldestPendingRequest.logId}`
             );
           }
+        } else {
+          this.logger.warn(
+            `Dispatcher found no sendable READY draft at send time: ${dispatchResult.reason ?? 'unknown reason'}`
+          );
         }
+
+        readyPendingDrafts = await this.loadUniqueReadyPendingDrafts(email);
+        readyPendingCount = readyPendingDrafts.length;
       }
 
       if (hasPendingReplacementRequest && !urgentReplacementSendRequested) {
@@ -359,7 +293,7 @@ export class WorkflowOrchestrator {
               `Image sourcing timed out for pending draft ${pendingDraft.id}`
             );
 
-            const approvalCheck = await visual.filterApprovalImages(
+            const curation = await visual.curateDraftImagesForReady(
               {
                 full_name: pendingArtist.full_name,
                 visual_practice: pendingArtist.visual_practice ?? undefined,
@@ -369,28 +303,34 @@ export class WorkflowOrchestrator {
               images
             );
 
-            if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
+            if (!curation.ready) {
               await draftOps.delete(pendingDraft.id!);
               this.logger.warn(
-                `Discarded pending draft ${pendingDraft.id} because it still lacks enough approval-ready images (${approvalCheck.accepted.length}/${MIN_APPROVAL_IMAGES})`
+                `Discarded pending draft ${pendingDraft.id} because it still lacks enough approval-ready images (${curation.approved.length}/${MIN_APPROVAL_IMAGES})`
               );
               continue;
             }
 
-            await draftOps.updateImages(pendingDraft.id!, approvalCheck.accepted);
+            await draftOps.markCurated(pendingDraft.id!, curation.approved);
+            await draftOps.markReady(
+              pendingDraft.id!,
+              curation.approved,
+              sendStillNeeded || hasPendingReplacementRequest ? 100 : pendingDraft.priority ?? 0
+            );
             blockedArtistNames.add(normalizedPendingArtistName);
 
             if (sendStillNeeded) {
-              this.logger.info(`Sending hydrated pending draft ${pendingDraft.id}`);
-              await email.sendApprovalEmail({
-                draftId: pendingDraft.id!,
-                images: approvalCheck.accepted,
-                bypassDailyCap: hasPendingReplacementRequest,
-              });
+              this.logger.info(`Dispatching hydrated READY draft ${pendingDraft.id}`);
+              const dispatchResult = await dispatcher.sendNextAvailable(hasPendingReplacementRequest);
+              if (!dispatchResult.sent) {
+                throw new Error(
+                  `Dispatcher could not send hydrated READY draft: ${dispatchResult.reason ?? 'unknown reason'}`
+                );
+              }
 
               state.email_sent = true;
-              state.artist_id = pendingDraft.artist_id;
-              state.draft_id = pendingDraft.id;
+              state.artist_id = dispatchResult.artistId ?? pendingDraft.artist_id;
+              state.draft_id = dispatchResult.draftId ?? pendingDraft.id;
               state.status = 'awaiting_approval';
               sendStillNeeded = false;
               emailSentToday = true;
@@ -424,7 +364,7 @@ export class WorkflowOrchestrator {
 
       if (options.skipDiscovery && state.email_sent) {
         state.prepared_draft = readyPendingCount > 0;
-        state.draft_id = state.draft_id ?? readyPendingDraft?.id;
+        state.draft_id = state.draft_id ?? readyPendingDrafts[0]?.id;
         state.status = 'awaiting_approval';
         return state;
       }
@@ -441,7 +381,7 @@ export class WorkflowOrchestrator {
         );
         state.email_sent = true;
         state.prepared_draft = readyPendingCount > 0;
-        state.draft_id = readyPendingDraft?.id;
+        state.draft_id = readyPendingDrafts[0]?.id;
         state.status = 'completed';
         return state;
       }
@@ -457,7 +397,7 @@ export class WorkflowOrchestrator {
           `✓ Backlog already prepared before the ${NORMAL_SEND_HOUR.toString().padStart(2, '0')}:00 send window (${readyPendingCount}/${TARGET_READY_PENDING_DRAFTS}) and daily production already reached (${draftsCreatedToday}/${TARGET_NEW_DRAFTS_PER_DAY})`
         );
         state.prepared_draft = true;
-        state.draft_id = readyPendingDraft?.id;
+        state.draft_id = readyPendingDrafts[0]?.id;
         state.status = 'completed';
         return state;
       }
@@ -476,7 +416,7 @@ export class WorkflowOrchestrator {
 
       if (!sendStillNeeded && preparationSlotsNeeded === 0) {
         state.prepared_draft = readyPendingCount > 0;
-        state.draft_id = readyPendingDraft?.id;
+        state.draft_id = readyPendingDrafts[0]?.id;
         state.status = 'completed';
         return state;
       }
@@ -648,23 +588,38 @@ export class WorkflowOrchestrator {
             continue;
           }
 
-          const approvedImages = visualReady.images;
+          const curatedImages = await visual.curateDraftImagesForReady(
+            {
+              full_name: selectedArtist.full_name,
+              visual_practice: selectedArtist.visual_practice ?? undefined,
+              birthplace_city: selectedArtist.birthplace_city ?? undefined,
+              birthplace_state: selectedArtist.birthplace_state ?? undefined,
+            },
+            visualReady.images
+          );
 
-          if (approvedImages.length < MIN_APPROVAL_IMAGES) {
+          if (!curatedImages.ready) {
             await draftOps.delete(synthesisResult.draft.id!);
             await this.recordFailedArtistForDate(selectedArtist.full_name, state.date);
             await this.bumpArtistFailureMetadata(
               selectedArtist.id!,
               'visual',
-              `Only ${approvedImages.length} approval-ready image(s) were found`,
+              `Only ${curatedImages.approved.length} approval-ready image(s) were found`,
               state.date
             );
             state.draft_id = undefined;
             this.logger.warn(
-              `Skipping artist ${selectedArtist.id} because only ${approvedImages.length} approval-ready image(s) were found`
+              `Skipping artist ${selectedArtist.id} because only ${curatedImages.approved.length} approval-ready image(s) were found`
             );
             continue;
           }
+
+          await draftOps.markCurated(synthesisResult.draft.id!, curatedImages.approved);
+          await draftOps.markReady(
+            synthesisResult.draft.id!,
+            curatedImages.approved,
+            sendStillNeeded || hasPendingReplacementRequest ? 100 : 0
+          );
 
           if (options.dryRun) {
             this.logger.info('DRY RUN - Skipping email send');
@@ -673,20 +628,19 @@ export class WorkflowOrchestrator {
             draftsCreatedToday++;
             preparationSlotsNeeded = computePreparationSlotsNeeded();
           } else if (sendStillNeeded) {
-            this.logger.info('Sending approval email');
+            this.logger.info('Sending approval email via dispatcher');
             state.status = 'emailing';
-
-            await draftOps.updateImages(synthesisResult.draft.id!, approvedImages);
-            await email.sendApprovalEmail({
-              draftId: synthesisResult.draft.id!,
-              images: approvedImages,
-              bypassDailyCap: hasPendingReplacementRequest,
-            });
+            const dispatchResult = await dispatcher.sendNextAvailable(hasPendingReplacementRequest);
+            if (!dispatchResult.sent) {
+              throw new Error(
+                `Dispatcher could not send a READY draft after synthesis: ${dispatchResult.reason ?? 'unknown reason'}`
+              );
+            }
 
             state.email_sent = true;
             state.status = 'awaiting_approval';
-            state.artist_id = selectedArtist.id;
-            state.draft_id = synthesisResult.draft.id;
+            state.artist_id = dispatchResult.artistId ?? selectedArtist.id;
+            state.draft_id = dispatchResult.draftId ?? synthesisResult.draft.id;
             this.logger.info('✓ Approval email sent successfully');
 
             sendStillNeeded = false;
@@ -703,7 +657,6 @@ export class WorkflowOrchestrator {
               );
             }
           } else {
-            await draftOps.updateImages(synthesisResult.draft.id!, approvedImages);
             state.prepared_draft = true;
             if (!state.email_sent) {
               state.draft_id = synthesisResult.draft.id;
@@ -782,16 +735,23 @@ export class WorkflowOrchestrator {
 
         if (sendStillNeeded) {
           try {
-            await email.sendApprovalEmail({
-              draftId: fallbackDraft.draftId,
-              images: fallbackDraft.images,
-              bypassDailyCap: hasPendingReplacementRequest,
-            });
+            await draftOps.markCurated(fallbackDraft.draftId, fallbackDraft.images);
+            await draftOps.markReady(
+              fallbackDraft.draftId,
+              fallbackDraft.images,
+              hasPendingReplacementRequest ? 100 : 0
+            );
+            const dispatchResult = await dispatcher.sendNextAvailable(hasPendingReplacementRequest);
+            if (!dispatchResult.sent) {
+              throw new Error(
+                `Dispatcher could not send emergency fallback draft: ${dispatchResult.reason ?? 'unknown reason'}`
+              );
+            }
 
             state.email_sent = true;
             state.status = 'awaiting_approval';
-            state.artist_id = fallbackDraft.artistId;
-            state.draft_id = fallbackDraft.draftId;
+            state.artist_id = dispatchResult.artistId ?? fallbackDraft.artistId;
+            state.draft_id = dispatchResult.draftId ?? fallbackDraft.draftId;
             sendStillNeeded = false;
             emailSentToday = true;
             completed = true;
@@ -814,6 +774,8 @@ export class WorkflowOrchestrator {
             continue;
           }
         } else {
+          await draftOps.markCurated(fallbackDraft.draftId, fallbackDraft.images);
+          await draftOps.markReady(fallbackDraft.draftId, fallbackDraft.images);
           state.prepared_draft = true;
           readyPendingCount++;
           draftsCreatedToday++;
@@ -1103,7 +1065,9 @@ export class WorkflowOrchestrator {
         }
 
         const drafts = await draftOps.findByArtistId(artist.id);
-        const hasOpenDraft = drafts.some((draft) => draft.status === 'pending' || draft.status === 'sent');
+        const hasOpenDraft = drafts.some((draft) =>
+          ['pending', 'researched', 'curated', 'drafted', 'ready', 'sent'].includes(draft.status)
+        );
         if (hasOpenDraft) {
           this.logger.warn(`Skipping artist ${artist.id} because there is already an open draft awaiting use or approval`);
           continue;
@@ -1422,6 +1386,7 @@ export class WorkflowOrchestrator {
       if (Array.isArray(metadata.research_cache_artwork_candidates)) {
         await this.attachResearchCacheCandidateSources(
           artistId,
+          artist.full_name,
           metadata.research_cache_artwork_candidates as Array<{
             pageUrl: string;
             imageUrl?: string;
@@ -1759,7 +1724,13 @@ export class WorkflowOrchestrator {
   }
 
   private async getOpenDraftArtistNames(): Promise<Set<string>> {
-    const pendingDrafts = await draftOps.findByStatus('pending');
+    const pendingDrafts = [
+      ...(await draftOps.findByStatus('pending')),
+      ...(await draftOps.findByStatus('researched')),
+      ...(await draftOps.findByStatus('curated')),
+      ...(await draftOps.findByStatus('drafted')),
+      ...(await draftOps.findByStatus('ready')),
+    ];
     const sentDrafts = await draftOps.findByStatus('sent');
     const seenNames = new Set<string>();
 
@@ -1773,32 +1744,6 @@ export class WorkflowOrchestrator {
     }
 
     return seenNames;
-  }
-
-  private async dedupeReadyPendingDraftsByArtistName<T extends { artist_id: number }>(
-    drafts: T[]
-  ): Promise<T[]> {
-    const deduped: T[] = [];
-    const seenNames = new Set<string>();
-
-    for (const draft of drafts) {
-      const artist = await artistOps.findById(draft.artist_id);
-      const normalizedName = artist?.full_name ? this.normalizeArtistName(artist.full_name) : '';
-
-      if (!normalizedName) {
-        deduped.push(draft);
-        continue;
-      }
-
-      if (seenNames.has(normalizedName)) {
-        continue;
-      }
-
-      seenNames.add(normalizedName);
-      deduped.push(draft);
-    }
-
-    return deduped;
   }
 
   private async loadUniqueReadyPendingDrafts(
@@ -2277,28 +2222,6 @@ export class WorkflowOrchestrator {
       .trim();
   }
 
-  private buildArtistNameVariants(name: string): string[] {
-    const normalized = this.normalizeArtistName(name);
-    if (!normalized) {
-      return [];
-    }
-
-    const tokens = normalized.split(' ').filter(Boolean);
-    const variants = new Set<string>([normalized]);
-
-    if (tokens.length >= 2) {
-      variants.add(tokens.slice(-2).join(' '));
-    }
-
-    for (const token of tokens) {
-      if (this.isDistinctiveArtistToken(token)) {
-        variants.add(token);
-      }
-    }
-
-    return Array.from(variants).filter(Boolean);
-  }
-
   private buildPublicationMatchVariants(name: string): string[] {
     const normalized = this.normalizeArtistName(name);
     if (!normalized) {
@@ -2317,33 +2240,6 @@ export class WorkflowOrchestrator {
     }
 
     return Array.from(variants).filter((variant) => variant.length >= 8);
-  }
-
-  private isDistinctiveArtistToken(token: string): boolean {
-    if (token.length < 7) {
-      return false;
-    }
-
-    const commonTokens = new Set([
-      'silva',
-      'santos',
-      'souza',
-      'oliveira',
-      'costa',
-      'almeida',
-      'rodrigues',
-      'ferreira',
-      'pereira',
-      'barbosa',
-      'amorim',
-      'vieira',
-      'andrade',
-      'junior',
-      'neto',
-      'filho',
-    ]);
-
-    return !commonTokens.has(token);
   }
 
   private isPotentialDuplicateName(candidate: string, blockedNames: string[]): boolean {

@@ -5,7 +5,6 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { EmailModule } from '../../src/modules/email/index.js';
 import { WorkflowOrchestrator } from '../../src/orchestrator/workflow.js';
 import { draftOps } from '../../src/db/operations/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/local.js';
@@ -31,7 +30,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     const from = payload.from;
     const subject = payload.subject;
-    const body = payload.body || '';
     const hasApprovalKeyword = payload.hasApprovalKeyword;
 
     console.log('Received webhook:', { from, subject, hasApprovalKeyword });

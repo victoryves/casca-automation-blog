@@ -2,8 +2,7 @@
  * Scraper Bridge Module
  *
  * Bridges TypeScript with Python Scrapling scripts via child_process.
- * Provides graceful fallback — if Python/Scrapling is not installed,
- * isAvailable() returns false and callers should use existing scrapers.
+ * Provides graceful fallback across Crawl4AI, Jina Reader, Scrapling, and Goose3.
  */
 
 import { execFile } from 'child_process';
@@ -16,11 +15,37 @@ const __dirname = path.dirname(__filename);
 
 const SCRAPERS_DIR = path.resolve(__dirname, '../../../scrapers');
 const VENV_PYTHON = path.join(SCRAPERS_DIR, '.venv', 'bin', 'python3');
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 30_000;
+type ContentCleaner = (result: PageFetchResult) => PageFetchResult;
+
+const ITAU_BOILERPLATE_PATTERNS = [
+  /navegue pela enciclop[eé]dia/iu,
+  /termos de uso/iu,
+  /newsletter/iu,
+  /breadcrumbs?/iu,
+  /sidebar/iu,
+  /ordena[cç][aã]o/iu,
+  /tipo de verbete/iu,
+  /verbetes relacionados/iu,
+  /compartilhar/iu,
+  /voltar ao topo/iu,
+];
 
 export class ScraperBridge {
   private imageAvailabilityCache: boolean | null = null;
   private pageAvailabilityCache: boolean | null = null;
+  private readonly cleaningRegistry: Array<{ matches: (hostname: string) => boolean; clean: ContentCleaner }> = [
+    {
+      matches: (hostname) =>
+        hostname === 'enciclopedia.itaucultural.org.br' || hostname.endsWith('.enciclopedia.itaucultural.org.br'),
+      clean: (result) => this.cleanItauCulturalPage(result),
+    },
+    {
+      matches: (hostname) =>
+        hostname === 'itaucultural.org.br' || hostname.endsWith('.itaucultural.org.br'),
+      clean: (result) => this.cleanItauCulturalPage(result),
+    },
+  ];
 
   /**
    * Check if the image scraping environment is available.
@@ -57,9 +82,9 @@ export class ScraperBridge {
     try {
       await this.runPython('-c', [
         [
-          'import importlib.util, os',
+          'import importlib.util',
           'mods = ("scrapling", "goose3", "crawl4ai")',
-          'available = any(importlib.util.find_spec(mod) for mod in mods) or bool(os.getenv("FIRECRAWL_API_KEY"))',
+          'available = any(importlib.util.find_spec(mod) for mod in mods)',
           'print("ok" if available else "")',
         ].join('; '),
       ]);
@@ -84,13 +109,13 @@ export class ScraperBridge {
     } = {}
   ): Promise<ImageSearchResult> {
     try {
-      const output = await this.runPython('search_images.py', [
+      const output = await this.runPythonWithRetry('search_images.py', [
         query,
         engine,
         String(limit),
         JSON.stringify(options),
       ]);
-      const result = JSON.parse(output) as ImageSearchResult;
+      const result = JSON.parse(this.extractJsonPayload(output)) as ImageSearchResult;
       return result;
     } catch (error) {
       console.warn('ScraperBridge.searchImages failed:', error);
@@ -108,8 +133,8 @@ export class ScraperBridge {
    */
   async extractImages(url: string, minWidth = 200, maxImages = 10): Promise<ImageExtractionResult> {
     try {
-      const output = await this.runPython('extract_images.py', [url, String(minWidth), String(maxImages)]);
-      const result = JSON.parse(output) as ImageExtractionResult;
+      const output = await this.runPythonWithRetry('extract_images.py', [url, String(minWidth), String(maxImages)]);
+      const result = JSON.parse(this.extractJsonPayload(output)) as ImageExtractionResult;
       return result;
     } catch (error) {
       console.warn('ScraperBridge.extractImages failed:', error);
@@ -127,9 +152,9 @@ export class ScraperBridge {
    */
   async fetchPage(url: string, maxLength = 5000): Promise<PageFetchResult> {
     try {
-      const output = await this.runPython('fetch_page.py', [url, String(maxLength)]);
-      const result = JSON.parse(output) as PageFetchResult;
-      return result;
+      const output = await this.runPythonWithRetry('fetch_page.py', [url, String(maxLength)]);
+      const result = JSON.parse(this.extractJsonPayload(output)) as PageFetchResult;
+      return this.cleanPageResult(result);
     } catch (error) {
       console.warn('ScraperBridge.fetchPage failed:', error);
       return {
@@ -183,6 +208,161 @@ export class ScraperBridge {
         }
       );
     });
+  }
+
+  private async runPythonWithRetry(scriptOrFlag: string, args: string[] = []): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.runPython(scriptOrFlag, args);
+      } catch (error) {
+        lastError = error;
+        const retryable = this.isRetryableError(error);
+        const usingProxy =
+          attempt >= 1 && Boolean(process.env.SCRAPER_PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+        console.warn(
+          `[ScraperBridge] attempt ${attempt + 1}/3 failed for ${scriptOrFlag} (proxy=${usingProxy}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        if (!retryable || attempt === 2) {
+          break;
+        }
+        const backoffMs = Math.min(1000 * 2 ** attempt, 8000);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    }
+
+    throw lastError;
+  }
+
+  private isRetryableError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /403|timeout|econnreset|socket|network/i.test(message);
+  }
+
+  private extractJsonPayload(output: string): string {
+    const trimmed = output.trim();
+    if (trimmed.startsWith('{')) {
+      return trimmed;
+    }
+
+    const successIndex = trimmed.lastIndexOf('{"success"');
+    if (successIndex >= 0) {
+      return trimmed.slice(successIndex);
+    }
+
+    const lines = trimmed
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const line = lines[index];
+      if (line.startsWith('{')) {
+        return line;
+      }
+    }
+
+    return trimmed;
+  }
+
+  private cleanPageResult(result: PageFetchResult): PageFetchResult {
+    const targetUrl = result.final_url || result.url;
+    let hostname = '';
+    try {
+      hostname = new URL(targetUrl).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      hostname = '';
+    }
+
+    const cleaner = this.cleaningRegistry.find((entry) => entry.matches(hostname));
+    const cleaned = cleaner ? cleaner.clean(result) : result;
+
+    const content = this.normalizeCleanContent(cleaned.content ?? '');
+    return {
+      ...cleaned,
+      content,
+      content_length: content.length,
+    };
+  }
+
+  private cleanItauCulturalPage(result: PageFetchResult): PageFetchResult {
+    const original = result.content ?? '';
+    if (!original.trim()) {
+      return result;
+    }
+
+    const textSectionMatch = original.match(/#\s*Texto\b[\s\S]*?(?=\n#\s*(?:Obras|Eventos|Institui[cç][aã]o|Bibliografia)\b|$)/iu);
+    let content = (textSectionMatch?.[0] ?? original)
+      .replace(/^#\s*Texto\b/giu, ' ')
+      .replace(/Navegue pela enciclop[eé]dia[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Termos de uso[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Newsletter[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Compartilhar[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Breadcrumbs?[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Sidebar[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Ordena[cç][aã]o[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Tipo de Verbete[\s\S]*?(?=\n{2,}|$)/giu, ' ')
+      .replace(/Verbetes relacionados[\s\S]*$/giu, ' ')
+      .replace(/Voltar ao topo[\s\S]*$/giu, ' ');
+
+    const paragraphs = content
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .filter((paragraph) => !ITAU_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(paragraph)))
+      .filter((paragraph) => !this.isLikelyMetadataParagraph(paragraph));
+
+    const firstSubstantialIndex = paragraphs.findIndex((paragraph) => paragraph.length >= 220);
+    const trimmedParagraphs =
+      firstSubstantialIndex > 0 ? paragraphs.slice(firstSubstantialIndex) : paragraphs;
+
+    content = trimmedParagraphs.join('\n\n').trim();
+
+    return {
+      ...result,
+      content,
+    };
+  }
+
+  private isLikelyMetadataParagraph(paragraph: string): boolean {
+    const lower = paragraph.toLowerCase();
+    if (paragraph.length <= 140) {
+      return (
+        lower.includes('tipo de verbete') ||
+        lower.includes('ordenação') ||
+        lower.includes('autoria') ||
+        lower.includes('palavras-chave') ||
+        lower.includes('categoria') ||
+        lower.includes('tema') ||
+        lower.includes('assunto') ||
+        lower.includes('voltar') ||
+        lower.includes('compartilhar')
+      );
+    }
+
+    const metadataHits = [
+      'tipo de verbete',
+      'ordenação',
+      'autoria',
+      'palavras-chave',
+      'tema',
+      'assunto',
+      'verbetes relacionados',
+      'termos de uso',
+      'newsletter',
+    ].filter((token) => lower.includes(token)).length;
+
+    return metadataHits >= 2;
+  }
+
+  private normalizeCleanContent(value: string): string {
+    return value
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
   }
 }
 

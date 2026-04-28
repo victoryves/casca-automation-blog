@@ -7,7 +7,7 @@
 import { Resend } from 'resend';
 import { htmlToText } from 'html-to-text';
 import { marked } from 'marked';
-import { draftOps, artistOps, sourceOps } from '../../db/operations/index.js';
+import { draftOps, artistOps, publishingOps, sourceOps, workerHeartbeatOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
 import { PublicationHistoryModule } from '../publication-history/index.js';
 import { VisualModule } from '../visual/index.js';
@@ -32,6 +32,15 @@ interface PreparedImageOption {
   attachment: PreparedAttachment;
 }
 
+export interface DispatchResult {
+  sent: boolean;
+  draftId?: number;
+  artistId?: number;
+  artistName?: string;
+  emailId?: string;
+  reason?: string;
+}
+
 export interface DraftSendabilityAssessment {
   sendable: boolean;
   reason?: string;
@@ -40,8 +49,151 @@ export interface DraftSendabilityAssessment {
   approvalReadyImages?: Image[];
 }
 
+export class Dispatcher {
+  constructor(private readonly email: EmailModule) {}
+
+  private isTemporaryDispatchBlock(reason?: string): boolean {
+    const normalized = (reason ?? '').toLowerCase();
+    return (
+      normalized.includes('daily hard cap') ||
+      normalized.includes('already been reached') ||
+      normalized.includes('duplicate approval email')
+    );
+  }
+
+  async getNextReadyDraft(): Promise<(Draft & { parsedImages: Image[] }) | null> {
+    while (true) {
+      const draft = await draftOps.claimNextReadyDraft(MIN_APPROVAL_IMAGES);
+      if (!draft?.id) {
+        return null;
+      }
+
+      const content = draft.content?.trim() ?? '';
+      if (content.length > 0) {
+        return draft;
+      }
+
+      await draftOps.updateStatus(draft.id, 'rejected');
+      await publishingOps.create({
+        draft_id: draft.id,
+        error_message: 'dispatcher_skipped_empty_content',
+      });
+      await workerHeartbeatOps.touch('overseer', `dispatcher-skip-empty:draft:${draft.id}`);
+    }
+  }
+
+  async sendDraft(id: number, bypassDailyCap = false): Promise<DispatchResult> {
+    const draft = await draftOps.findByIdWithImages(id);
+    if (!draft?.id) {
+      return {
+        sent: false,
+        reason: `Draft ${id} not found`,
+      };
+    }
+
+    const artist = await artistOps.findById(draft.artist_id);
+    if (!artist) {
+      await draftOps.updateStatus(id, 'rejected');
+      return {
+        sent: false,
+        draftId: id,
+        reason: `Artist ${draft.artist_id} not found`,
+      };
+    }
+
+    const sendability = await this.email.assessDraftSendability({
+      draftId: id,
+      images: draft.parsedImages,
+      bypassDailyCap,
+    });
+
+    if (!sendability.sendable) {
+      await draftOps.clearHeartbeat(id);
+      if (!this.isTemporaryDispatchBlock(sendability.reason)) {
+        await draftOps.updateStatus(id, 'rejected');
+      }
+      await publishingOps.create({
+        draft_id: id,
+        error_message: `dispatcher_rejected:${sendability.reason ?? 'unsendable'}`,
+      });
+
+      return {
+        sent: false,
+        draftId: id,
+        artistId: artist.id,
+        artistName: artist.full_name,
+        reason: sendability.reason ?? 'Draft failed dispatcher sendability preflight',
+      };
+    }
+
+    try {
+      const emailId = await this.email.sendApprovalEmail({
+        draftId: id,
+        images: sendability.approvalReadyImages,
+        bypassDailyCap,
+      });
+
+      await publishingOps.create({
+        draft_id: id,
+        error_message: 'approval_email_sent',
+      });
+
+      return {
+        sent: true,
+        draftId: id,
+        artistId: artist.id,
+        artistName: artist.full_name,
+        emailId,
+      };
+    } catch (error) {
+      await draftOps.clearHeartbeat(id);
+      return {
+        sent: false,
+        draftId: id,
+        artistId: artist.id,
+        artistName: artist.full_name,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async sendNextAvailable(bypassDailyCap = false): Promise<DispatchResult> {
+    while (true) {
+      const nextDraft = await this.getNextReadyDraft();
+      if (!nextDraft?.id) {
+        return {
+          sent: false,
+          reason: 'No READY draft available in dispatcher queue',
+        };
+      }
+
+      const result = await this.sendDraft(nextDraft.id, bypassDailyCap);
+      if (result.sent) {
+        return result;
+      }
+      if (this.isTemporaryDispatchBlock(result.reason)) {
+        return result;
+      }
+    }
+  }
+}
+
 const TARGET_APPROVAL_IMAGES = 3;
 const MIN_APPROVAL_IMAGES = 3;
+const MIN_ARTICLE_WORDS = 450;
+const MAX_ARTICLE_WORDS = 700;
+const SCRAPING_JUNK_PATTERNS = [
+  'get the app',
+  'join us',
+  'buy now',
+  'skip to main content',
+  'marketplace',
+  'cookie policy',
+  'privacy policy',
+  'log in',
+  'login',
+  'sign up',
+];
 
 export class EmailModule {
   private client: Resend;
@@ -55,7 +207,7 @@ export class EmailModule {
   /**
    * Send approval email with article preview
    */
-  async sendApprovalEmail(options: SendApprovalEmailOptions): Promise<void> {
+  async sendApprovalEmail(options: SendApprovalEmailOptions): Promise<string | undefined> {
     const config = getConfig();
     const { draft, artist, approvalReadyImages } = await this.preflightDraftSendability(options);
 
@@ -127,6 +279,7 @@ export class EmailModule {
       // Update draft status
       await draftOps.updateStatus(options.draftId, 'sent');
       console.log(`  ✓ Draft marked as sent`);
+      return result.data?.id;
     } catch (error) {
       console.error('Failed to send email:', error);
       throw new Error(
@@ -219,10 +372,18 @@ export class EmailModule {
       {
         full_name: artist.full_name,
         visual_practice: artist.visual_practice ?? undefined,
+        birth_year:
+          typeof artistMetadata.bio_metadata === 'object' &&
+          artistMetadata.bio_metadata &&
+          typeof (artistMetadata.bio_metadata as Record<string, unknown>).birth_year === 'string'
+            ? ((artistMetadata.bio_metadata as Record<string, unknown>).birth_year as string)
+            : undefined,
         birthplace_city: artist.birthplace_city ?? undefined,
         birthplace_state: artist.birthplace_state ?? undefined,
+        metadata: artist.metadata ?? undefined,
       },
-      resolvedImages
+      resolvedImages,
+      { trustInstitutionalVerified: true }
     );
 
     if (approvalCheck.accepted.length < MIN_APPROVAL_IMAGES) {
@@ -237,6 +398,14 @@ export class EmailModule {
     }
 
     const approvalReadyImages = approvalCheck.accepted.slice(0, TARGET_APPROVAL_IMAGES);
+    if (approvalReadyImages.length !== TARGET_APPROVAL_IMAGES) {
+      throw new Error(
+        `Refusing to send approval email without exactly ${TARGET_APPROVAL_IMAGES} approved images`
+      );
+    }
+
+    this.assertDraftEditorialInvariant(draft.title, draft.content, artist.full_name);
+
     const ownershipMismatches = approvalReadyImages.filter(
       (image) => !this.imageOwnershipMatchesArtist(image, artist.full_name)
     );
@@ -251,6 +420,34 @@ export class EmailModule {
       artist,
       approvalReadyImages,
     };
+  }
+
+  private assertDraftEditorialInvariant(title: string, content: string, artistName: string): void {
+    const normalizedTitle = this.normalizeArtistName(title);
+    const normalizedArtist = this.normalizeArtistName(artistName);
+    const surname = normalizedArtist.split(/\s+/).filter(Boolean).pop();
+    if (
+      !normalizedTitle.includes(normalizedArtist) &&
+      !(surname && surname.length >= 3 && normalizedTitle.includes(surname))
+    ) {
+      throw new Error('Refusing to send approval email because the title does not include the artist name');
+    }
+
+    const wordCount = content.split(/\s+/).filter(Boolean).length;
+    if (wordCount < MIN_ARTICLE_WORDS || wordCount > MAX_ARTICLE_WORDS) {
+      throw new Error(
+        `Refusing to send approval email because the article body is outside the ${MIN_ARTICLE_WORDS}-${MAX_ARTICLE_WORDS} word range`
+      );
+    }
+
+    const normalizedContent = content.toLowerCase();
+    if (SCRAPING_JUNK_PATTERNS.some((pattern) => normalizedContent.includes(pattern))) {
+      throw new Error('Refusing to send approval email because scraping junk was detected in the article');
+    }
+
+    if (!/\bleg\b/i.test(content) || !/\banatomy\b/i.test(content)) {
+      throw new Error('Refusing to send approval email because required synthesis keywords "leg" and "anatomy" are missing');
+    }
   }
 
   private async assertArtistNotPreviouslyPublished(artistName: string): Promise<void> {
@@ -326,7 +523,29 @@ export class EmailModule {
       .toLowerCase();
   }
 
+  private isTrustedOwnershipSource(image: Image): boolean {
+    const provenance = image.provenance_context ?? '';
+    if (
+      provenance.startsWith('INSTITUTIONAL_VERIFIED:') ||
+      provenance.startsWith('MANUAL_OVERRIDE:') ||
+      provenance.startsWith('GALLERY_PROXY:')
+    ) {
+      return true;
+    }
+
+    const haystack = `${image.url} ${image.attribution ?? ''}`.toLowerCase();
+    return (
+      haystack.includes('artsandculture.google.com') ||
+      haystack.includes('google.com/culturalinstitute') ||
+      haystack.includes('itaucultural.org.br') ||
+      haystack.includes('enciclopedia.itaucultural.org.br')
+    );
+  }
+
   private imageOwnershipMatchesArtist(image: Image, artistName: string): boolean {
+    if (this.isTrustedOwnershipSource(image)) {
+      return true;
+    }
     const haystack = this.normalizeArtistName(`${image.url} ${image.caption ?? ''} ${image.attribution ?? ''}`);
     const normalizedArtist = this.normalizeArtistName(artistName);
     if (!normalizedArtist) {

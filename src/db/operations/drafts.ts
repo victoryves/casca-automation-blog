@@ -2,9 +2,12 @@
  * Draft Database Operations - SQLite
  */
 
-import { query } from '../client.js';
+import { getDatabase, query } from '../client.js';
 import type { Draft, DraftStatus, Image } from '../../types/index.js';
 import { getConfig } from '../../config/index.js';
+
+const OPEN_DRAFT_STATUSES: DraftStatus[] = ['pending', 'researched', 'curated', 'drafted', 'ready', 'sent'];
+const READY_QUEUE_STATUSES: DraftStatus[] = ['ready'];
 
 export const draftOps = {
   /**
@@ -14,10 +17,11 @@ export const draftOps = {
     const existingPendingDraft = query.get<{ id: number }>(
       `SELECT id
        FROM drafts
-       WHERE artist_id = ? AND status = 'pending'
-       ORDER BY created_at DESC
+       WHERE artist_id = ?
+         AND status IN (${OPEN_DRAFT_STATUSES.map(() => '?').join(', ')})
+       ORDER BY priority DESC, created_at DESC
        LIMIT 1`,
-      [draft.artist_id]
+      [draft.artist_id, ...OPEN_DRAFT_STATUSES]
     );
 
     if (existingPendingDraft?.id) {
@@ -25,15 +29,17 @@ export const draftOps = {
     }
 
     const result = query.run(
-      `INSERT INTO drafts (artist_id, title, subtitle, content, images, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO drafts (artist_id, title, subtitle, content, images, status, last_heartbeat, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         draft.artist_id,
         draft.title,
         draft.subtitle ?? null,
         draft.content,
         images ? JSON.stringify(images) : null,
-        draft.status ?? 'pending',
+        draft.status ?? 'drafted',
+        draft.last_heartbeat ?? null,
+        draft.priority ?? 0,
       ]
     );
 
@@ -84,7 +90,13 @@ export const draftOps = {
   },
 
   async findReadyPendingDrafts(minImages = 3): Promise<Array<Draft & { parsedImages: Image[] }>> {
-    const pendingDrafts = await this.findByStatus('pending');
+    const pendingDrafts = query.all<Draft>(
+      `SELECT *
+       FROM drafts
+       WHERE status IN (${READY_QUEUE_STATUSES.map(() => '?').join(', ')})
+       ORDER BY priority DESC, created_at ASC`,
+      READY_QUEUE_STATUSES
+    );
     const readyDrafts: Array<Draft & { parsedImages: Image[] }> = [];
 
     for (const draft of pendingDrafts) {
@@ -98,6 +110,9 @@ export const draftOps = {
     }
 
     return readyDrafts.sort((a, b) => {
+      if ((b.priority ?? 0) !== (a.priority ?? 0)) {
+        return (b.priority ?? 0) - (a.priority ?? 0);
+      }
       const aTime = new Date(a.created_at ?? 0).getTime();
       const bTime = new Date(b.created_at ?? 0).getTime();
       return aTime - bTime;
@@ -107,7 +122,12 @@ export const draftOps = {
   async findHydratablePendingDrafts(
     minImages = 3
   ): Promise<Array<Draft & { parsedImages: Image[] }>> {
-    const pendingDrafts = await this.findByStatus('pending');
+    const pendingDrafts = query.all<Draft>(
+      `SELECT *
+       FROM drafts
+       WHERE status IN ('pending', 'researched', 'curated', 'drafted')
+       ORDER BY priority DESC, created_at DESC`
+    );
     const hydratableDrafts: Array<Draft & { parsedImages: Image[] }> = [];
 
     for (const draft of pendingDrafts) {
@@ -203,15 +223,110 @@ export const draftOps = {
    */
   async updateStatus(id: number, status: DraftStatus): Promise<void> {
     if (status === 'sent') {
-      query.run(`UPDATE drafts SET status = ?, sent_at = ? WHERE id = ?`, [
+      query.run(`UPDATE drafts SET status = ?, sent_at = ?, last_heartbeat = ? WHERE id = ?`, [
         status,
         new Date().toISOString(),
+        null,
         id,
       ]);
       return;
     }
 
     query.run(`UPDATE drafts SET status = ? WHERE id = ?`, [status, id]);
+  },
+
+  async markCurated(id: number, images: Image[], priority?: number): Promise<void> {
+    query.run(
+      `UPDATE drafts
+       SET images = ?, status = 'curated', priority = COALESCE(?, priority), last_heartbeat = NULL
+       WHERE id = ?`,
+      [JSON.stringify(images), priority ?? null, id]
+    );
+  },
+
+  async markReady(id: number, images: Image[], priority?: number): Promise<void> {
+    query.run(
+      `UPDATE drafts
+       SET images = ?, status = 'ready', priority = COALESCE(?, priority), last_heartbeat = NULL
+       WHERE id = ?`,
+      [JSON.stringify(images), priority ?? null, id]
+    );
+  },
+
+  async updatePriority(id: number, priority: number): Promise<void> {
+    query.run(`UPDATE drafts SET priority = ? WHERE id = ?`, [priority, id]);
+  },
+
+  async touchHeartbeat(id: number, timestamp = new Date().toISOString()): Promise<void> {
+    query.run(`UPDATE drafts SET last_heartbeat = ? WHERE id = ?`, [timestamp, id]);
+  },
+
+  async clearHeartbeat(id: number): Promise<void> {
+    query.run(`UPDATE drafts SET last_heartbeat = NULL WHERE id = ?`, [id]);
+  },
+
+  async claimNextReadyDraft(
+    minImages = 3,
+    heartbeatTtlMs = 15 * 60 * 1000
+  ): Promise<(Draft & { parsedImages: Image[] }) | null> {
+    const staleBefore = new Date(Date.now() - heartbeatTtlMs).toISOString();
+    const database = getDatabase();
+
+    const claim = database.transaction(() => {
+      const candidate = query.get<Draft>(
+        `SELECT *
+         FROM drafts
+         WHERE status = 'ready'
+           AND (last_heartbeat IS NULL OR last_heartbeat < ?)
+         ORDER BY priority DESC, created_at ASC
+         LIMIT 1`,
+        [staleBefore]
+      );
+
+      if (!candidate?.id) {
+        return null;
+      }
+
+      const heartbeat = new Date().toISOString();
+      const result = query.run(
+        `UPDATE drafts
+         SET last_heartbeat = ?
+         WHERE id = ?
+           AND status = 'ready'
+           AND (last_heartbeat IS NULL OR last_heartbeat < ?)`,
+        [heartbeat, candidate.id, staleBefore]
+      );
+
+      if (result.changes === 0) {
+        return null;
+      }
+
+      return {
+        ...candidate,
+        last_heartbeat: heartbeat,
+      };
+    });
+
+    const claimed = claim();
+    if (!claimed) {
+      return null;
+    }
+
+    const parsedImages = claimed.images ? (JSON.parse(claimed.images) as Image[]) : [];
+    if (parsedImages.length < minImages) {
+      query.run(
+        `UPDATE drafts
+         SET status = 'curated', last_heartbeat = NULL
+         WHERE id = ?`,
+        [claimed.id]
+      );
+      return null;
+    }
+
+    return {
+      ...claimed,
+      parsedImages,
+    };
   },
 
   /**

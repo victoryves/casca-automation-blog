@@ -5,7 +5,6 @@
  */
 
 import axios from 'axios';
-import { marked } from 'marked';
 import { draftOps, artistOps, publishingOps, sourceOps } from '../../db/operations/index.js';
 import type { PublishingResult, Draft, Image } from '../../types/index.js';
 
@@ -276,7 +275,7 @@ export class PublishingModule {
     const logs = await publishingOps.findByDraftId(draftId);
     if (logs.length > 0) {
       const latestLog = logs[0];
-      await publishingOps.updateMediumUrl(latestLog.id!, mediumUrl);
+      await publishingOps.updateUrl(latestLog.id!, mediumUrl);
       console.log(`✓ Updated Medium URL for draft ${draftId}`);
     }
   }

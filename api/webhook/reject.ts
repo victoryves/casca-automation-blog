@@ -8,10 +8,10 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { spawn } from 'node:child_process';
-import { artistOps, draftOps } from '../../src/db/operations/index.js';
+import { draftOps } from '../../src/db/operations/index.js';
 import { getConfig } from '../../src/config/index.js';
 import { initDatabase, closeDatabase } from '../../src/db/local.js';
-import { EmailModule } from '../../src/modules/email/index.js';
+import { Dispatcher, EmailModule } from '../../src/modules/email/index.js';
 import { EmergencyFallbackModule } from '../../src/modules/emergency/index.js';
 import { queueRejectedDraftReplacement } from '../../src/modules/rejections/index.js';
 
@@ -111,6 +111,7 @@ async function sendImmediateReplacement(
 ): Promise<{ sent: boolean; blockedByDailyCap?: boolean; draftId?: number; artistName?: string }> {
   const config = getConfig();
   const email = new EmailModule(config.env.resendApiKey);
+  const dispatcher = new Dispatcher(email);
   const emergencyFallback = new EmergencyFallbackModule();
   const rejectedDraft = await draftOps.findById(rejectedDraftId);
   const excludedArtistIds = new Set<number>();
@@ -119,80 +120,17 @@ async function sendImmediateReplacement(
     excludedArtistIds.add(rejectedDraft.artist_id);
   }
 
-  const readyPendingDrafts = await draftOps.findReadyPendingDrafts(MIN_APPROVAL_IMAGES);
+  const dispatchResult = await dispatcher.sendNextAvailable(true);
+  if (dispatchResult.sent) {
+    return {
+      sent: true,
+      draftId: dispatchResult.draftId,
+      artistName: dispatchResult.artistName,
+    };
+  }
 
-  for (const pendingDraft of readyPendingDrafts) {
-    if (!pendingDraft.id || excludedArtistIds.has(pendingDraft.artist_id)) {
-      continue;
-    }
-
-    const artist = await artistOps.findById(pendingDraft.artist_id);
-    if (!artist) {
-      await draftOps.delete(pendingDraft.id);
-      continue;
-    }
-
-     const artistMetadata = artistOps.parseMetadata(artist);
-     if (artistMetadata.editor_rejected) {
-       await draftOps.delete(pendingDraft.id);
-       excludedArtistIds.add(pendingDraft.artist_id);
-       continue;
-     }
-
-    const assessment = await email.assessDraftSendability({
-      draftId: pendingDraft.id,
-      images: pendingDraft.parsedImages,
-      bypassDailyCap: true,
-    });
-    if (!assessment.sendable) {
-      const message = assessment.reason ?? 'unknown immediate replacement failure';
-      console.warn(
-        `Immediate replacement preflight failed for pending draft ${pendingDraft.id}: ${message}`
-      );
-
-      if (isDiscardableImmediateSendError(message)) {
-        await draftOps.delete(pendingDraft.id);
-        excludedArtistIds.add(pendingDraft.artist_id);
-        continue;
-      }
-
-      if (isDailyCapSendError(message)) {
-        return { sent: false, blockedByDailyCap: true };
-      }
-
-      continue;
-    }
-
-    try {
-      await email.sendApprovalEmail({
-        draftId: pendingDraft.id,
-        images: assessment.approvalReadyImages,
-        bypassDailyCap: true,
-      });
-
-      return {
-        sent: true,
-        draftId: pendingDraft.id,
-        artistName: artist.full_name,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `Immediate replacement send failed for pending draft ${pendingDraft.id}: ${message}`
-      );
-
-      if (isDailyCapSendError(message)) {
-        return { sent: false, blockedByDailyCap: true };
-      }
-
-      if (isDiscardableImmediateSendError(message)) {
-        await draftOps.delete(pendingDraft.id);
-        excludedArtistIds.add(pendingDraft.artist_id);
-        continue;
-      }
-
-      throw error;
-    }
+  if (dispatchResult.reason && isDailyCapSendError(dispatchResult.reason)) {
+    return { sent: false, blockedByDailyCap: true };
   }
 
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -259,14 +197,17 @@ function triggerReplacementAttemptDetached(options: { preferSend: boolean }): vo
   try {
     const command = options.preferSend
       ? 'mkdir -p logs && (' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --force --skip-discovery >> logs/webhook-replacements.log 2>&1 || true); ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --force >> logs/webhook-replacements.log 2>&1 || true); ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true); ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --cache-only >> logs/webhook-replacements.log 2>&1 || true)' +
+        '(npx tsx scripts/scout-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/research-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/curator-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/run-dispatcher.ts --force >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/overseer.ts >> logs/webhook-replacements.log 2>&1 || true)' +
         ')'
       : 'mkdir -p logs && (' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only >> logs/webhook-replacements.log 2>&1 || true); ' +
-        '(npx tsx scripts/run-daily.ts --wait-for-lock --prepare-only --cache-only >> logs/webhook-replacements.log 2>&1 || true)' +
+        '(npx tsx scripts/scout-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/research-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/curator-agent.ts --once >> logs/webhook-replacements.log 2>&1 || true); ' +
+        '(npx tsx scripts/overseer.ts >> logs/webhook-replacements.log 2>&1 || true)' +
         ')';
 
     const child = spawn('/bin/zsh', ['-lc', command], {

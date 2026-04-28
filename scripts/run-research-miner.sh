@@ -93,25 +93,35 @@ log "Node: $(node --version) | npm: $(npm --version)"
 log "Timezone: $APP_TIMEZONE | Batch: $PREMINE_BATCH_SIZE"
 log "========================================"
 
-write_status "booting" "Starting continuous shortlist mining loop" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+write_status "booting" "Starting scout + research agent loop" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
 
 while true; do
-  write_status "mining" "Running pre-mine-shortlist batch ${PREMINE_BATCH_SIZE}" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
-  log "Running pre-mine-shortlist (batch ${PREMINE_BATCH_SIZE})"
+  write_status "scouting" "Running ScoutAgent single pass" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+  log "Running ScoutAgent single pass"
+  npm run scout-agent -- --once >> "$LOG_FILE" 2>&1
+  SCOUT_EXIT=$?
 
-  npm run pre-mine-shortlist -- --limit "${PREMINE_BATCH_SIZE}" >> "$LOG_FILE" 2>&1
-  LAST_EXIT=$?
+  write_status "researching" "Running ResearchAgent single pass" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+  log "Running ResearchAgent single pass"
+  npm run research-agent -- --once >> "$LOG_FILE" 2>&1
+  RESEARCH_EXIT=$?
+
+  if [ $SCOUT_EXIT -ne 0 ]; then
+    LAST_EXIT=$SCOUT_EXIT
+  else
+    LAST_EXIT=$RESEARCH_EXIT
+  fi
 
   if [ $LAST_EXIT -eq 0 ]; then
     SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-    write_status "idle" "Last mining pass completed successfully; sleeping ${RESEARCH_MINER_SLEEP_SECONDS}s" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
-    log "Pre-mining pass completed successfully. Sleeping ${RESEARCH_MINER_SLEEP_SECONDS}s."
+    write_status "idle" "Scout/Research loop completed successfully; sleeping ${RESEARCH_MINER_SLEEP_SECONDS}s" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+    log "Scout/Research loop completed successfully. Sleeping ${RESEARCH_MINER_SLEEP_SECONDS}s."
     sleep "$RESEARCH_MINER_SLEEP_SECONDS"
     continue
   fi
 
   FAILURE_COUNT=$((FAILURE_COUNT + 1))
-  write_status "error" "Mining pass failed with exit ${LAST_EXIT}; retrying in ${RESEARCH_MINER_ERROR_SLEEP_SECONDS}s" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
-  log "Pre-mining pass failed with exit ${LAST_EXIT}. Retrying in ${RESEARCH_MINER_ERROR_SLEEP_SECONDS}s."
+  write_status "error" "Scout/Research loop failed with exit ${LAST_EXIT}; retrying in ${RESEARCH_MINER_ERROR_SLEEP_SECONDS}s" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+  log "Scout/Research loop failed with exit ${LAST_EXIT}. Retrying in ${RESEARCH_MINER_ERROR_SLEEP_SECONDS}s."
   sleep "$RESEARCH_MINER_ERROR_SLEEP_SECONDS"
 done

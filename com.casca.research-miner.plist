@@ -7,12 +7,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-research-miner.sh</string>
+        <string>/opt/homebrew/bin/npx</string>
+        <string>tsx</string>
+        <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/scripts/research-agent.ts</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/victoryves/casca-automation-blog-runner</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -21,10 +22,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/research-miner-stdout.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/research-miner-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/research-miner-stderr.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/research-miner-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

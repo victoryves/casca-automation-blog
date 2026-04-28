@@ -8,23 +8,23 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/victoryves/casca-automation-blog-runner/scripts/run-daily-wrapper.sh</string>
+        <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/scripts/run-dispatcher-overseer.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/victoryves/casca-automation-blog-runner</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog</string>
 
     <key>RunAtLoad</key>
     <true/>
 
     <key>StartInterval</key>
-    <integer>60</integer>
+    <integer>300</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stdout.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/victoryves/casca-automation-blog-runner/logs/launchd-stderr.log</string>
+    <string>/Users/victoryves/Documents/personal/Vibe Coding/casca-automation-blog/logs/launchd-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -1,12 +1,12 @@
 /**
  * DuckDuckGo HTML Search Client
  *
- * Fallback search provider used when Tavily is unavailable or rate limited.
+ * Fallback search provider used when Exa is unavailable or rate limited.
  * Returns results in the same shape expected by the discovery pipeline.
  */
 
 import axios from 'axios';
-import type { TavilyResponse, TavilySearchResult } from '../../types/index.js';
+import type { SearchResponse, SearchResult } from '../../types/index.js';
 
 export interface DuckDuckGoSearchOptions {
   query: string;
@@ -16,7 +16,7 @@ export interface DuckDuckGoSearchOptions {
 export class DuckDuckGoClient {
   private readonly baseUrl = 'https://html.duckduckgo.com/html/';
 
-  async search(options: DuckDuckGoSearchOptions): Promise<TavilyResponse> {
+  async search(options: DuckDuckGoSearchOptions): Promise<SearchResponse> {
     const response = await axios.get<string>(this.baseUrl, {
       params: {
         q: options.query,
@@ -37,9 +37,9 @@ export class DuckDuckGoClient {
     };
   }
 
-  private parseResults(html: string, maxResults: number): TavilySearchResult[] {
+  private parseResults(html: string, maxResults: number): SearchResult[] {
     const blocks = html.match(/<div class="result results_links(?:_deep)?[\s\S]*?<\/div>\s*<\/div>/gi) ?? [];
-    const results: TavilySearchResult[] = [];
+    const results: SearchResult[] = [];
 
     for (const block of blocks) {
       if (results.length >= maxResults) {

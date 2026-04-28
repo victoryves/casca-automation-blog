@@ -10,7 +10,27 @@ import { z } from 'zod';
 // Database Entity Types
 // ============================================================================
 
-export const ArtistStatusSchema = z.enum(['discovered', 'verified', 'published', 'rejected']);
+export const ArtistStatusSchema = z.enum([
+  'discovered',
+  'pending_more_sources',
+  'researched',
+  'curated',
+  'drafted',
+  'ready_to_send',
+  'verified',
+  'published',
+  'rejected',
+  'rejected_by_head_of_art',
+  'review_later',
+  'rejected_duplicate_external',
+  'skipped_asset_quality',
+  'failed_asset_quality_retry_headless',
+  'hard_failure_quarantine',
+  'skipped_pure_context_failure',
+  'failed_context_preflight',
+  'already_published',
+  'failed_permanent',
+]);
 export type ArtistStatus = z.infer<typeof ArtistStatusSchema>;
 
 export const ArtistSchema = z.object({
@@ -22,6 +42,9 @@ export const ArtistSchema = z.object({
   status: ArtistStatusSchema.default('discovered'),
   discovered_at: z.string().optional(),
   published_at: z.string().optional().nullable(),
+  last_heartbeat: z.string().optional().nullable(),
+  priority: z.number().optional(),
+  failure_count: z.number().optional(),
   metadata: z.string().optional().nullable(),
 });
 
@@ -39,7 +62,16 @@ export const SourceSchema = z.object({
 
 export type Source = z.infer<typeof SourceSchema>;
 
-export const DraftStatusSchema = z.enum(['pending', 'sent', 'approved', 'rejected']);
+export const DraftStatusSchema = z.enum([
+  'pending',
+  'researched',
+  'curated',
+  'drafted',
+  'ready',
+  'sent',
+  'approved',
+  'rejected',
+]);
 export type DraftStatus = z.infer<typeof DraftStatusSchema>;
 
 export const ImageSchema = z.object({
@@ -47,6 +79,7 @@ export const ImageSchema = z.object({
   caption: z.string().optional(),
   attribution: z.string(),
   local_path: z.string().optional(),
+  provenance_context: z.string().optional(),
 });
 
 export type Image = z.infer<typeof ImageSchema>;
@@ -60,6 +93,8 @@ export const DraftSchema = z.object({
   images: z.string().optional(), // JSON stringified Image[]
   created_at: z.string().optional(),
   sent_at: z.string().optional().nullable(),
+  last_heartbeat: z.string().optional().nullable(),
+  priority: z.number().optional(),
   status: DraftStatusSchema.default('pending'),
 });
 
@@ -75,11 +110,50 @@ export const PublishingLogSchema = z.object({
 
 export type PublishingLog = z.infer<typeof PublishingLogSchema>;
 
+export const PublicationHistoryEntrySchema = z.object({
+  id: z.number().optional(),
+  artist_name: z.string(),
+  normalized_artist_name: z.string(),
+  post_title: z.string().optional().nullable(),
+  post_url: z.string().optional().nullable(),
+  source: z.string(),
+  published_at: z.string().optional().nullable(),
+  synced_at: z.string().optional().nullable(),
+});
+
+export type PublicationHistoryEntry = z.infer<typeof PublicationHistoryEntrySchema>;
+
+export const LibrarianPendingReviewEntrySchema = z.object({
+  id: z.number().optional(),
+  original_title: z.string(),
+  resolved_name: z.string(),
+  normalized_resolved_name: z.string(),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string().optional().nullable(),
+  url: z.string(),
+  description: z.string().optional().nullable(),
+  content: z.string().optional().nullable(),
+  created_at: z.string().optional().nullable(),
+  updated_at: z.string().optional().nullable(),
+});
+
+export type LibrarianPendingReviewEntry = z.infer<typeof LibrarianPendingReviewEntrySchema>;
+
+export const WorkerHeartbeatSchema = z.object({
+  agent_name: z.string(),
+  last_heartbeat: z.string().optional().nullable(),
+  pid: z.number().optional().nullable(),
+  detail: z.string().optional().nullable(),
+  updated_at: z.string().optional().nullable(),
+});
+
+export type WorkerHeartbeat = z.infer<typeof WorkerHeartbeatSchema>;
+
 // ============================================================================
 // API Response Types
 // ============================================================================
 
-export const TavilySearchResultSchema = z.object({
+export const SearchResultSchema = z.object({
   title: z.string(),
   url: z.string().url(),
   content: z.string(),
@@ -87,14 +161,14 @@ export const TavilySearchResultSchema = z.object({
   published_date: z.string().optional(),
 });
 
-export type TavilySearchResult = z.infer<typeof TavilySearchResultSchema>;
+export type SearchResult = z.infer<typeof SearchResultSchema>;
 
-export const TavilyResponseSchema = z.object({
+export const SearchResponseSchema = z.object({
   query: z.string(),
-  results: z.array(TavilySearchResultSchema),
+  results: z.array(SearchResultSchema),
 });
 
-export type TavilyResponse = z.infer<typeof TavilyResponseSchema>;
+export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
 export const WikimediaImageSchema = z.object({
   title: z.string(),
@@ -152,6 +226,17 @@ export const SearchQueriesConfigSchema = z.object({
 });
 
 export type SearchQueriesConfig = z.infer<typeof SearchQueriesConfigSchema>;
+
+export const EpithetEntrySchema = z.object({
+  epithet: z.string(),
+  artist_name: z.string(),
+});
+
+export const EpithetsConfigSchema = z.object({
+  mappings: z.array(EpithetEntrySchema),
+});
+
+export type EpithetsConfig = z.infer<typeof EpithetsConfigSchema>;
 
 // ============================================================================
 // Workflow Types

@@ -21,7 +21,7 @@ function testConfig(): void {
     console.log(`  Database Path: ${config.env.dbPath}`);
     console.log(`  Gemini API Key: ${config.env.geminiApiKey.substring(0, 10)}...`);
     console.log(`  Resend API Key: ${config.env.resendApiKey.substring(0, 10)}...`);
-    console.log(`  Tavily API Key: ${config.env.tavilyApiKey.substring(0, 10)}...`);
+    console.log(`  Exa API Key: ${config.env.exaApiKey.substring(0, 10)}...`);
     console.log(`  Approval Email: ${config.env.approvalEmail}`);
     console.log(`  From Email: ${config.env.fromEmail}`);
     console.log(`  Log Level: ${config.env.logLevel}`);

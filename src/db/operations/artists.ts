@@ -56,7 +56,8 @@ export const artistOps = {
            birthplace_city = COALESCE(birthplace_city, ?),
            birthplace_state = COALESCE(birthplace_state, ?),
            visual_practice = COALESCE(visual_practice, ?),
-           metadata = COALESCE(metadata, ?)
+           metadata = COALESCE(metadata, ?),
+           priority = COALESCE(priority, 0)
          WHERE id = ?`,
         [
           artist.birthplace_city ?? null,
@@ -70,8 +71,8 @@ export const artistOps = {
     }
 
     const result = query.run(
-      `INSERT INTO artists (full_name, birthplace_city, birthplace_state, visual_practice, status, metadata)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO artists (full_name, birthplace_city, birthplace_state, visual_practice, status, metadata, last_heartbeat, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         artist.full_name,
         artist.birthplace_city ?? null,
@@ -79,6 +80,8 @@ export const artistOps = {
         artist.visual_practice ?? null,
         artist.status ?? 'discovered',
         artist.metadata ?? null,
+        artist.last_heartbeat ?? null,
+        artist.priority ?? 0,
       ]
     );
 
@@ -128,7 +131,10 @@ export const artistOps = {
    */
   async findVerifiedUnpublished(): Promise<Artist[]> {
     return query.all<Artist>(
-      `SELECT * FROM artists WHERE status = 'verified' ORDER BY discovered_at ASC`
+      `SELECT *
+       FROM artists
+       WHERE status IN ('verified', 'researched')
+       ORDER BY priority DESC, discovered_at ASC`
     );
   },
 
@@ -189,5 +195,40 @@ export const artistOps = {
       [status]
     );
     return row?.count ?? 0;
+  },
+
+  async updatePriority(id: number, priority: number): Promise<void> {
+    query.run(`UPDATE artists SET priority = ? WHERE id = ?`, [priority, id]);
+  },
+
+  async resetFailureCount(id: number): Promise<void> {
+    query.run(`UPDATE artists SET failure_count = 0 WHERE id = ?`, [id]);
+  },
+
+  async incrementFailureCount(id: number): Promise<number> {
+    query.run(
+      `UPDATE artists
+       SET failure_count = COALESCE(failure_count, 0) + 1
+       WHERE id = ?`,
+      [id]
+    );
+    const row = query.get<{ failure_count: number }>(
+      `SELECT failure_count FROM artists WHERE id = ?`,
+      [id]
+    );
+    return row?.failure_count ?? 0;
+  },
+
+  async markFailedPermanent(id: number): Promise<void> {
+    query.run(
+      `UPDATE artists
+       SET status = 'failed_permanent'
+       WHERE id = ?`,
+      [id]
+    );
+  },
+
+  async touchHeartbeat(id: number, timestamp = new Date().toISOString()): Promise<void> {
+    query.run(`UPDATE artists SET last_heartbeat = ? WHERE id = ?`, [timestamp, id]);
   },
 };

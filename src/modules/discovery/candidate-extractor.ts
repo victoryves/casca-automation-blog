@@ -4,8 +4,7 @@
  * Extracts artist candidate information from search results.
  */
 
-import type { TavilySearchResult } from '../../types/index.js';
-import type { Artist, Source } from '../../types/index.js';
+import type { SearchResult, Artist, Source } from '../../types/index.js';
 
 export interface ExtractedCandidate {
   artist: Omit<Artist, 'id'>;
@@ -16,7 +15,7 @@ export class CandidateExtractor {
   /**
    * Extract artist candidates from search results
    */
-  extract(results: TavilySearchResult[]): ExtractedCandidate[] {
+  extract(results: SearchResult[]): ExtractedCandidate[] {
     const candidates: ExtractedCandidate[] = [];
 
     for (const result of results) {
@@ -36,7 +35,7 @@ export class CandidateExtractor {
   /**
    * Extract candidate from a single search result
    */
-  private extractFromResult(result: TavilySearchResult): ExtractedCandidate | null {
+  private extractFromResult(result: SearchResult): ExtractedCandidate | null {
     // Extract artist name from title (common patterns)
     const name = this.extractArtistName(result.title);
     if (!name) return null;

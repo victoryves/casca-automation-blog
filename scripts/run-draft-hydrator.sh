@@ -102,7 +102,7 @@ ready_pending_count() {
     return
   fi
 
-  sqlite3 "$db_path" "select count(*) from drafts where status='pending' and images is not null and images <> '';" 2>/dev/null || echo 0
+  sqlite3 "$db_path" "select count(*) from drafts where status='ready';" 2>/dev/null || echo 0
 }
 
 run_workflow_pass() {
@@ -116,6 +116,10 @@ run_workflow_pass() {
 }
 
 while true; do
+  write_status "curating" "Running CuratorAgent single pass" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
+  log "Running CuratorAgent single pass"
+  npm run curator-agent -- --once >> "$LOG_FILE" 2>&1 || true
+
   READY_COUNT="$(ready_pending_count)"
   write_status "send-check" "Primary pass with ready backlog count=${READY_COUNT}" "$SUCCESS_COUNT" "$FAILURE_COUNT" "$LAST_EXIT"
 

@@ -5,27 +5,28 @@
  */
 
 import axios from 'axios';
-import { TavilyClient } from './tavily-client.js';
+import { ExaClient } from './exa-client.js';
 import { DuckDuckGoClient } from './duckduckgo-client.js';
 import { CandidateExtractor } from './candidate-extractor.js';
 import { SEED_ARTISTS, type SeedArtist } from './seed-artists.js';
-import { artistOps, draftOps, sourceOps } from '../../db/operations/index.js';
+import { artistOps, draftOps, publicationHistoryOps, sourceOps } from '../../db/operations/index.js';
 import { PublicationHistoryModule } from '../publication-history/index.js';
 import { ScraperBridge } from '../scraper-bridge/index.js';
+import { assessSourceWithLibrarian, isDiamondDomain } from './librarian.js';
 import {
   getConfig,
   getInstitutionCredibility,
   getInstitutionName,
   type Config,
 } from '../../config/index.js';
-import type { DiscoveryResult, Artist, Source, TavilySearchResult } from '../../types/index.js';
+import type { DiscoveryResult, Artist, Source, SearchResult } from '../../types/index.js';
 
 export class DiscoveryModule {
-  private tavilyClient: TavilyClient;
+  private exaClient: ExaClient;
   private duckDuckGoClient: DuckDuckGoClient;
   private extractor: CandidateExtractor;
   private scraperBridge: ScraperBridge;
-  private tavilyUnavailable = false;
+  private exaUnavailable = false;
   private publicationHistory: PublicationHistoryModule | null = null;
   private readonly STATE_MAP: Record<string, string> = {
     PE: 'Pernambuco',
@@ -43,8 +44,8 @@ export class DiscoveryModule {
     MG: 'Minas Gerais',
   };
 
-  constructor(tavilyApiKey: string) {
-    this.tavilyClient = new TavilyClient(tavilyApiKey);
+  constructor(exaApiKey: string) {
+    this.exaClient = new ExaClient(exaApiKey);
     this.duckDuckGoClient = new DuckDuckGoClient();
     this.extractor = new CandidateExtractor();
     this.scraperBridge = new ScraperBridge();
@@ -66,6 +67,25 @@ export class DiscoveryModule {
     }
 
     const existingNames = await this.loadExistingArtistNames();
+    // 0) Collection-first discovery from museum/acervo item pages
+    await this.discoverFromCollectionAnchors({
+      config,
+      maxCandidates,
+      candidates,
+      sourcesMap,
+      errors,
+      existingNames,
+    });
+
+    if (maxCandidates && candidates.length >= maxCandidates) {
+      console.log(`  ✓ Reached target of ${maxCandidates} candidate(s) via collection-first discovery`);
+      return {
+        candidates,
+        sources: sourcesMap,
+        errors,
+      };
+    }
+
     // 1) Seed list: name-first discovery (primary strategy)
     await this.discoverFromSeedList({
       config,
@@ -96,7 +116,6 @@ export class DiscoveryModule {
 
         const response = await this.searchWithFallback({
           query: searchQuery.query,
-          searchDepth: 'advanced',
           maxResults: 10,
         });
 
@@ -144,6 +163,8 @@ export class DiscoveryModule {
           }
 
           sourcesMap.set(artistId, artistSources);
+          const hasDiamondSource = artistSources.some((source) => isDiamondDomain(source.url));
+          await artistOps.updatePriority(artistId, hasDiamondSource ? 60 : 50);
           console.log(`  ✓ Added: ${artist.full_name} (${artistSources.length} sources)`);
 
           if (maxCandidates && candidates.length >= maxCandidates) {
@@ -173,19 +194,163 @@ export class DiscoveryModule {
     };
   }
 
+  private async discoverFromCollectionAnchors(params: {
+    config: Config;
+    maxCandidates?: number;
+    candidates: Artist[];
+    sourcesMap: Map<number, Source[]>;
+    errors: string[];
+    existingNames: Set<string>;
+  }): Promise<void> {
+    const { config, maxCandidates, candidates, sourcesMap, errors, existingNames } = params;
+    const availableSeeds = await this.filterSeedsByPublishedHistory(
+      this.balanceSeedsAcrossCategories(SEED_ARTISTS).filter(
+        (seed) => !existingNames.has(this.normalizeName(seed.name))
+      )
+    );
+
+    if (availableSeeds.length === 0) {
+      return;
+    }
+
+    const collectionQueries = [
+      'site:enciclopedia.itaucultural.org.br "obras" "nordeste"',
+      'site:itaucultural.org.br/obra "nordeste"',
+      'site:museudeartecontemporanea.org.br/acervo/obra',
+      'site:pinacoteca.org.br/acervo',
+      'site:artsandculture.google.com/asset "nordeste" obra',
+    ];
+
+    const seenUrls = new Set<string>();
+    for (const query of collectionQueries) {
+      if (maxCandidates && candidates.length >= maxCandidates) {
+        return;
+      }
+
+      try {
+        const response = await this.searchWithFallback({
+          query,
+          maxResults: 12,
+        });
+
+        for (const result of response.results) {
+          if (maxCandidates && candidates.length >= maxCandidates) {
+            return;
+          }
+          if (
+            !result.url ||
+            seenUrls.has(result.url) ||
+            this.isInstitutionalNoise(result.url) ||
+            !this.isCollectionItemUrl(result.url)
+          ) {
+            continue;
+          }
+          seenUrls.add(result.url);
+
+          const matchedSeed = availableSeeds.find((seed) => this.isStrongArtistMatch(result, seed.name));
+          if (!matchedSeed) {
+            continue;
+          }
+
+          const normalized = this.normalizeName(matchedSeed.name);
+          if (existingNames.has(normalized)) {
+            continue;
+          }
+
+          const resolvedStates = this.resolveStates(matchedSeed.states);
+          const primarySource: Omit<Source, 'id' | 'artist_id'> = {
+            url: result.url,
+            institution:
+              getInstitutionName(result.url, config.institutions) ??
+              this.safeDomain(result.url) ??
+              'unknown',
+            credibility_score: Math.min(
+              1,
+              this.estimateCredibility(result.url, result.score, config) + 0.15
+            ),
+            content_summary: result.content?.substring(0, 500),
+          };
+
+          const guessedSources = await this.collectGuessedSeedSources(matchedSeed, config);
+          const sources = this.mergeSources([primarySource], guessedSources, 3);
+          const hasDiamondSource = sources.some((source) => isDiamondDomain(source.url));
+          if (!this.hasSufficientSourcesForSeed(sources)) {
+            continue;
+          }
+
+          const artist: Omit<Artist, 'id'> = {
+            full_name: matchedSeed.name,
+            birthplace_city: undefined,
+            birthplace_state: resolvedStates[0],
+            visual_practice: matchedSeed.practice,
+            status: 'discovered',
+            metadata: JSON.stringify({
+              curated: true,
+              seed_category: matchedSeed.category,
+              seed_states: resolvedStates,
+              seed_state_codes: matchedSeed.states,
+              discovery_mode: 'collection-first',
+              collection_query: query,
+              collection_url: result.url,
+              source_count: sources.length,
+              has_diamond_source: hasDiamondSource,
+            }),
+          };
+
+          const artistId = await artistOps.create(artist);
+          const createdArtist = await artistOps.findById(artistId);
+          if (!createdArtist) {
+            errors.push(`Failed to create collection-first artist: ${matchedSeed.name}`);
+            continue;
+          }
+
+          const artistSources: Source[] = [];
+          for (const source of sources) {
+            const sourceId = await sourceOps.create({
+              artist_id: artistId,
+              url: source.url,
+              institution: source.institution,
+              credibility_score: source.credibility_score,
+              content_summary: source.content_summary,
+            });
+            const createdSource = await sourceOps.findById(sourceId);
+            if (createdSource) {
+              artistSources.push(createdSource);
+            }
+          }
+
+          candidates.push(createdArtist);
+          existingNames.add(normalized);
+          sourcesMap.set(artistId, artistSources);
+          await artistOps.updatePriority(artistId, hasDiamondSource ? 70 : 55);
+          console.log(`  ✓ Added collection-first artist: ${matchedSeed.name} (${artistSources.length} sources)`);
+        }
+      } catch (error) {
+        const errorMsg = `Collection-first query failed for "${query}": ${error instanceof Error ? error.message : String(error)}`;
+        console.warn(`  ⚠ ${errorMsg}`);
+        errors.push(errorMsg);
+      }
+
+      await this.sleep(900);
+    }
+  }
+
   private async filterSeedsByPublishedHistory(seeds: SeedArtist[]): Promise<SeedArtist[]> {
     if (seeds.length === 0) {
       return seeds;
     }
-
-    const config = getConfig();
-    const publicationHistory = this.ensurePublicationHistory(config);
-    const haystacks = await publicationHistory.getPublishedPostHaystacks();
-    if (haystacks.length === 0) {
-      return seeds;
+    const publishedNames = await publicationHistoryOps.getNormalizedNames();
+    if (publishedNames.size === 0) {
+      const config = getConfig();
+      const publicationHistory = this.ensurePublicationHistory(config);
+      const haystacks = await publicationHistory.getPublishedPostHaystacks();
+      if (haystacks.length === 0) {
+        return seeds;
+      }
+      return seeds.filter((seed) => !this.isArtistPublishedInExternalBlog(seed.name, haystacks));
     }
 
-    return seeds.filter((seed) => !this.isArtistPublishedInExternalBlog(seed.name, haystacks));
+    return seeds.filter((seed) => !publishedNames.has(this.normalizeName(seed.name)));
   }
 
   private ensurePublicationHistory(config: Config): PublicationHistoryModule {
@@ -198,6 +363,30 @@ export class DiscoveryModule {
     }
 
     return this.publicationHistory;
+  }
+
+  private isInstitutionalNoise(url: string): boolean {
+    const normalized = url.toLowerCase();
+    const blockedFragments = [
+      '/faq',
+      '/equipe',
+      '/staff',
+      '/about',
+      '/quem-somos',
+      '/educador',
+      '/educativo',
+      '/agenda',
+      '/noticias',
+      '/contato',
+      '/login',
+      '/imprensa',
+      '/associe-se',
+      '/acesso-a-informacao',
+      '/ouvidoria',
+      '/editais',
+      '/espaco-do-educador',
+    ];
+    return blockedFragments.some((fragment) => normalized.includes(fragment));
   }
 
   private isArtistPublishedInExternalBlog(artistName: string, publishedHaystacks: string[]): boolean {
@@ -245,6 +434,7 @@ export class DiscoveryModule {
 
       try {
         const { sources, queriesUsed } = await this.collectSeedSources(seed, resolvedStates, config);
+        const hasDiamondSource = sources.some((source) => isDiamondDomain(source.url));
 
         if (!this.hasSufficientSourcesForSeed(sources)) {
           errors.push(
@@ -266,6 +456,7 @@ export class DiscoveryModule {
             seed_state_codes: seed.states,
             queries_used: queriesUsed,
             source_count: sources.length,
+            has_diamond_source: hasDiamondSource,
           }),
         };
 
@@ -297,6 +488,7 @@ export class DiscoveryModule {
         }
 
         sourcesMap.set(artistId, artistSources);
+        await artistOps.updatePriority(artistId, hasDiamondSource ? 60 : 50);
         console.log(`  ✓ Added seed artist: ${seed.name} (${artistSources.length} sources)`);
       } catch (error) {
         const errorMsg = `Seed search failed for "${seed.name}": ${error instanceof Error ? error.message : String(error)}`;
@@ -318,11 +510,23 @@ export class DiscoveryModule {
     );
 
     for (const artist of artists) {
+      if (artist.status === 'pending_more_sources') {
+        continue;
+      }
       reservedNames.add(this.normalizeName(artist.full_name));
+    }
+
+    const publishedNames = await publicationHistoryOps.getNormalizedNames();
+    for (const normalizedName of publishedNames) {
+      reservedNames.add(normalizedName);
     }
 
     const reservedDrafts = [
       ...(await draftOps.findByStatus('pending')),
+      ...(await draftOps.findByStatus('researched')),
+      ...(await draftOps.findByStatus('curated')),
+      ...(await draftOps.findByStatus('drafted')),
+      ...(await draftOps.findByStatus('ready')),
       ...(await draftOps.findByStatus('sent')),
       ...(await draftOps.findByStatus('approved')),
       ...(await draftOps.findByStatus('rejected')),
@@ -523,21 +727,44 @@ export class DiscoveryModule {
     const base = `"${seed.name}"`;
     const primaryState = states[0];
     const practiceHints = this.getPracticeHints(seed.practice);
+    const highResTerms = ['"high resolution"', '"original size"', '"2000px"'];
 
     const queries = [
+      `${base} site:iam-pba.com.br ${highResTerms.join(' ')}`,
+      `${base} site:leiloesbr.com.br ${highResTerms.join(' ')}`,
+      `${base} site:itaucultural.org.br/obra ${highResTerms.join(' ')}`,
+      `${base} site:pinacoteca.org.br/acervo ${highResTerms.join(' ')}`,
+      `${base} site:artsandculture.google.com/asset ${highResTerms.join(' ')}`,
+      `${base} site:catalogodasartes.com.br ${highResTerms.join(' ')}`,
+      `${base} site:itaucultural.org.br ${highResTerms.join(' ')}`,
+      `${base} site:enciclopedia.itaucultural.org.br ${highResTerms.join(' ')}`,
+      `${base} biografia obra`,
+      `${base} instituição de arte`,
+      `${base} museu`,
       this.buildQuery(base, practiceHints[0], primaryState, 'artista visual'),
       this.buildQuery(base, 'biografia', primaryState),
+      this.buildQuery(base, 'biografia', 'análise crítica'),
+      this.buildQuery(base, 'pintura', 'óleo sobre tela'),
+      this.buildQuery(base, 'pintura', 'desenho'),
       this.buildQuery(base, 'artista visual', 'Nordeste'),
       this.buildQuery(base, practiceHints[1] ?? practiceHints[0], primaryState),
       this.buildQuery(base, practiceHints[0], 'obra', `site:artsandculture.google.com`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:artsandculture.google.com/asset`),
       this.buildQuery(base, practiceHints[0], 'obra', `site:enciclopedia.itaucultural.org.br`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:itaucultural.org.br/obra`),
       this.buildQuery(base, practiceHints[0], 'obra', `site:itaucultural.org.br`),
       this.buildQuery(base, practiceHints[0], 'obra', `site:masp.org.br`),
       this.buildQuery(base, practiceHints[0], 'obra', `site:pinacoteca.org.br`),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:iam-pba.com.br`, ...highResTerms),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:leiloesbr.com.br`, ...highResTerms),
+      this.buildQuery(base, practiceHints[0], 'obra', `site:catalogodasartes.com.br`, ...highResTerms),
+      this.buildQuery(base, 'acervo', `site:pinacoteca.org.br/acervo`),
       this.buildQuery(base, 'site:enciclopedia.itaucultural.org.br'),
       this.buildQuery(base, 'site:wikipedia.org'),
       this.buildQuery(base, 'site:wikidata.org'),
       this.buildQuery(base, 'site:fundaj.gov.br'),
+      this.buildQuery(base, practiceHints[0], 'museu', primaryState),
+      this.buildQuery(base, practiceHints[0], 'instituição de arte', primaryState),
     ];
 
     return Array.from(new Set(queries.filter((q) => q.length > 0)));
@@ -587,7 +814,7 @@ export class DiscoveryModule {
     config: Config
   ): Promise<{ sources: Omit<Source, 'id' | 'artist_id'>[]; queriesUsed: string[] }> {
     const queries = this.buildSeedQueries(seed, states);
-    const resultsByUrl = new Map<string, TavilySearchResult>();
+    const resultsByUrl = new Map<string, SearchResult>();
     const queriesUsed: string[] = [];
     const guessedSources = await this.collectGuessedSeedSources(seed, config);
 
@@ -600,13 +827,12 @@ export class DiscoveryModule {
       try {
         const response = await this.searchWithFallback({
           query,
-          searchDepth: 'advanced',
           maxResults: 6,
         });
 
         queriesUsed.push(query);
         for (const result of response.results) {
-          if (!result.url || resultsByUrl.has(result.url)) continue;
+          if (!result.url || resultsByUrl.has(result.url) || this.isInstitutionalNoise(result.url)) continue;
           resultsByUrl.set(result.url, result);
         }
 
@@ -690,6 +916,15 @@ export class DiscoveryModule {
         continue;
       }
 
+      if (this.isInstitutionalNoise(summary.finalUrl)) {
+        continue;
+      }
+
+      const librarian = assessSourceWithLibrarian(summary.finalUrl, config, summary.score);
+      if (librarian.blocked) {
+        continue;
+      }
+
       const strongMatch = this.isStrongArtistMatch(
         {
           title: summary.title,
@@ -706,11 +941,8 @@ export class DiscoveryModule {
 
       sources.push({
         url: summary.finalUrl,
-        institution:
-          getInstitutionName(summary.finalUrl, config.institutions) ??
-          this.safeDomain(summary.finalUrl) ??
-          'unknown',
-        credibility_score: this.estimateCredibility(summary.finalUrl, summary.score, config),
+        institution: librarian.institution ?? getInstitutionName(summary.finalUrl, config.institutions) ?? this.safeDomain(summary.finalUrl) ?? 'unknown',
+        credibility_score: Math.min(1, this.estimateCredibility(summary.finalUrl, summary.score, config) + librarian.boost * 0.04),
         content_summary: summary.content.substring(0, 500),
       });
 
@@ -772,10 +1004,16 @@ export class DiscoveryModule {
       if (await this.scraperBridge.isPageFetchAvailable()) {
         const fetched = await this.scraperBridge.fetchPage(url, 5000);
         if (fetched.success && fetched.content && fetched.content.length >= 180) {
+          const score =
+            fetched.extractor === 'crawl4ai'
+              ? 0.86
+              : fetched.extractor === 'jina-reader'
+                ? 0.83
+                : 0.8;
           return {
             title: fetched.title || url,
             content: fetched.content,
-            score: fetched.extractor === 'firecrawl' ? 0.86 : 0.8,
+            score,
             finalUrl: fetched.final_url || fetched.url || url,
           };
         }
@@ -861,26 +1099,35 @@ export class DiscoveryModule {
   }
 
   private buildSourcesFromResults(
-    results: TavilySearchResult[],
+    results: SearchResult[],
     artistName: string,
     config: Config,
     limit: number
   ): Omit<Source, 'id' | 'artist_id'>[] {
     const scored = results
       .map((result) => {
+        const librarian = assessSourceWithLibrarian(result.url, config, result.score ?? 0);
         const credibility = this.estimateCredibility(result.url, result.score, config);
         const matchBoost = this.matchScore(result, artistName);
         const strongMatch = this.isStrongArtistMatch(result, artistName);
         return {
           result,
+          librarian,
           credibility,
           matchBoost,
           strongMatch,
         };
       })
-      .filter((item) => item.strongMatch && !this.isBlockedDiscoverySource(item.result.url));
+      .filter(
+        (item) =>
+          item.strongMatch &&
+          !item.librarian.blocked &&
+          !this.isBlockedDiscoverySource(item.result.url) &&
+          !this.isInstitutionalNoise(item.result.url)
+      );
 
     scored.sort((a, b) => {
+      if (b.librarian.boost !== a.librarian.boost) return b.librarian.boost - a.librarian.boost;
       const preferredDelta =
         this.getArtworkSourcePriority(b.result.url) - this.getArtworkSourcePriority(a.result.url);
       if (preferredDelta !== 0) return preferredDelta;
@@ -902,8 +1149,8 @@ export class DiscoveryModule {
 
       sources.push({
         url: item.result.url,
-        institution: getInstitutionName(item.result.url, config.institutions) ?? (domain || 'unknown'),
-        credibility_score: item.credibility,
+        institution: item.librarian.institution ?? getInstitutionName(item.result.url, config.institutions) ?? (domain || 'unknown'),
+        credibility_score: Math.min(1, item.credibility + item.librarian.boost * 0.04),
         content_summary: item.result.content?.substring(0, 500),
       });
 
@@ -961,6 +1208,15 @@ export class DiscoveryModule {
     }
   }
 
+  private isCollectionItemUrl(url: string): boolean {
+    const normalized = url.toLowerCase();
+    return (
+      /\/obras?\//.test(normalized) ||
+      /\/acervo(\/|$)/.test(normalized) ||
+      /artsandculture\.google\.com\/asset\//.test(normalized)
+    );
+  }
+
   private isBlockedDiscoverySource(url: string): boolean {
     const domain = this.safeDomain(url);
     if (!domain) return false;
@@ -996,7 +1252,7 @@ export class DiscoveryModule {
     return 0;
   }
 
-  private matchScore(result: TavilySearchResult, artistName: string): number {
+  private matchScore(result: SearchResult, artistName: string): number {
     const haystack = `${result.title} ${result.content}`.toLowerCase();
     const tokens = this.normalizeName(artistName)
       .split(' ')
@@ -1013,7 +1269,7 @@ export class DiscoveryModule {
     return hits / tokens.length;
   }
 
-  private isStrongArtistMatch(result: TavilySearchResult, artistName: string): boolean {
+  private isStrongArtistMatch(result: SearchResult, artistName: string): boolean {
     const normalizedArtistName = this.normalizeName(artistName);
     const normalizedHaystack = this.normalizeName(
       `${result.title} ${result.content} ${result.url}`
@@ -1059,10 +1315,9 @@ export class DiscoveryModule {
 
   private async searchWithFallback(options: {
     query: string;
-    searchDepth?: 'basic' | 'advanced';
     maxResults?: number;
-  }): Promise<{ query: string; results: TavilySearchResult[] }> {
-    if (this.tavilyUnavailable) {
+  }): Promise<{ query: string; results: SearchResult[] }> {
+    if (this.exaUnavailable) {
       return this.duckDuckGoClient.search({
         query: options.query,
         maxResults: options.maxResults,
@@ -1070,18 +1325,40 @@ export class DiscoveryModule {
     }
 
     try {
-      return await this.tavilyClient.search(options);
+      const siteMatches = Array.from(options.query.matchAll(/site:([^\s]+)/gi)).map((match) =>
+        match[1].replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+      );
+      const cleanedQuery = options.query.replace(/\s*site:[^\s]+/gi, ' ').replace(/\s+/g, ' ').trim();
+
+      return await this.exaClient.search({
+        query: cleanedQuery || options.query,
+        maxResults: options.maxResults,
+        includeDomains: siteMatches.length > 0 ? siteMatches : undefined,
+        excludeDomains: [
+          'pinterest.com',
+          'instagram.com',
+          'facebook.com',
+          'amazon.com',
+          'amazon.com.br',
+          'mercadolivre.com.br',
+          'shopee.com.br',
+          'artsy.net',
+          'mutualart.com',
+          'dailyartfair.com',
+        ],
+        category: /noticia|news|exposicao|exhibition/i.test(cleanedQuery) ? 'news' : undefined,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('status code 432')) {
-        this.tavilyUnavailable = true;
-        console.warn(`  ⚠ Tavily unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
+      if (/401|403|429|exa api error/i.test(message)) {
+        this.exaUnavailable = true;
+        console.warn(`  ⚠ Exa unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
         return this.duckDuckGoClient.search({
           query: options.query,
           maxResults: options.maxResults,
         });
       }
-      console.warn(`  ⚠ Tavily unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
+      console.warn(`  ⚠ Exa unavailable for "${options.query}". Falling back to DuckDuckGo HTML search.`, message);
       return this.duckDuckGoClient.search({
         query: options.query,
         maxResults: options.maxResults,

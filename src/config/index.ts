@@ -11,9 +11,11 @@ import {
   InstitutionsConfigSchema,
   PromptsConfigSchema,
   SearchQueriesConfigSchema,
+  EpithetsConfigSchema,
   type InstitutionsConfig,
   type PromptsConfig,
   type SearchQueriesConfig,
+  type EpithetsConfig,
 } from '../types/index.js';
 
 // Load environment variables
@@ -31,9 +33,11 @@ export interface EnvConfig {
   // APIs
   geminiApiKey: string;
   resendApiKey: string;
-  tavilyApiKey: string;
+  exaApiKey: string;
   wikimediaApiKey?: string;
   serpApiKey?: string;
+  googleSearchApiKey?: string;
+  googleSearchEngineId?: string;
 
   // Email
   approvalEmail: string;
@@ -62,7 +66,7 @@ function loadEnvConfig(): EnvConfig {
   const required = [
     'GEMINI_API_KEY',
     'RESEND_API_KEY',
-    'TAVILY_API_KEY',
+    'EXA_API_KEY',
     'APPROVAL_EMAIL',
     'FROM_EMAIL',
     'AUTHOR_NAME',
@@ -78,9 +82,11 @@ function loadEnvConfig(): EnvConfig {
     dbPath: process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'casca.sqlite'),
     geminiApiKey: process.env.GEMINI_API_KEY!,
     resendApiKey: process.env.RESEND_API_KEY!,
-    tavilyApiKey: process.env.TAVILY_API_KEY!,
+    exaApiKey: process.env.EXA_API_KEY!,
     wikimediaApiKey: process.env.WIKIMEDIA_API_KEY,
     serpApiKey: process.env.SERPAPI_API_KEY,
+    googleSearchApiKey: process.env.GOOGLE_SEARCH_API_KEY,
+    googleSearchEngineId: process.env.GOOGLE_SEARCH_ENGINE_ID,
     approvalEmail: process.env.APPROVAL_EMAIL!,
     fromEmail: process.env.FROM_EMAIL!,
     mediumImportEmail: process.env.MEDIUM_IMPORT_EMAIL,
@@ -122,6 +128,7 @@ export interface Config {
   institutions: InstitutionsConfig;
   prompts: PromptsConfig;
   searchQueries: SearchQueriesConfig;
+  epithets: EpithetsConfig;
 }
 
 let configCache: Config | null = null;
@@ -135,12 +142,14 @@ export function loadConfig(): Config {
   const institutions = loadJsonConfig('config/institutions.json', InstitutionsConfigSchema);
   const prompts = loadJsonConfig('config/prompts.json', PromptsConfigSchema);
   const searchQueries = loadJsonConfig('config/search-queries.json', SearchQueriesConfigSchema);
+  const epithets = loadJsonConfig('config/epithets.json', EpithetsConfigSchema);
 
   configCache = {
     env,
     institutions,
     prompts,
     searchQueries,
+    epithets,
   };
 
   return configCache;

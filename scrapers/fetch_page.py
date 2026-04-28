@@ -3,10 +3,10 @@
 Fetch and extract main content from a web page using multiple backends.
 
 Backends tried in order:
-1. Firecrawl API (when FIRECRAWL_API_KEY is configured)
-2. Scrapling
-3. Goose3
-4. Crawl4AI
+1. Crawl4AI
+2. Jina Reader
+3. Scrapling
+4. Goose3
 
 Usage:
     python fetch_page.py <url> [max_length]
@@ -37,6 +37,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+REQUEST_TIMEOUT_SECONDS = 30
+MIN_CONTENT_LENGTH = 200
+JINA_READER_BASE_URL = os.getenv("JINA_READER_URL", "https://r.jina.ai/").rstrip("/") + "/"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -69,7 +72,7 @@ def normalize_text(value: str, max_length: int) -> str:
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = value.strip()
     if len(value) > max_length:
-      value = value[:max_length].rstrip() + "..."
+        value = value[:max_length].rstrip() + "..."
     return value
 
 
@@ -104,6 +107,18 @@ def choose_best_text(chunks: list[str]) -> str:
         return ""
     cleaned.sort(key=len, reverse=True)
     return cleaned[0]
+
+
+def looks_like_raw_html(value: str) -> bool:
+    if not value:
+        return False
+
+    sample = value[:1200].lower()
+    if "<html" in sample or "<body" in sample or "<head" in sample:
+        return True
+
+    tag_matches = re.findall(r"</?[a-z][^>]{0,80}>", sample)
+    return len(tag_matches) >= 8
 
 
 def extract_discovered_urls(base_url: str, html: str, max_links: int = 12) -> list[str]:
@@ -164,74 +179,6 @@ def result_payload(
     }
 
 
-def try_firecrawl(url: str, max_length: int) -> dict | None:
-    api_key = os.getenv("FIRECRAWL_API_KEY")
-    if not api_key:
-        return None
-
-    payload = json.dumps(
-        {
-            "url": url,
-            "onlyMainContent": True,
-            "formats": ["markdown", "html"],
-            "removeBase64Images": True,
-            "blockAds": True,
-            "timeout": 30000,
-        }
-    ).encode("utf-8")
-    endpoints = [
-        "https://api.firecrawl.dev/v2/scrape",
-        "https://api.firecrawl.dev/v1/scrape",
-    ]
-    raw = None
-    for endpoint in endpoints:
-        req = urllib.request.Request(
-            endpoint,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": USER_AGENT,
-            },
-            method="POST",
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=35) as response:
-                raw = response.read().decode("utf-8", "ignore")
-                break
-        except urllib.error.HTTPError as exc:
-            print(f"[firecrawl] HTTP {exc.code} via {endpoint}", file=sys.stderr)
-        except Exception as exc:
-            print(f"[firecrawl] failed via {endpoint}: {exc}", file=sys.stderr)
-
-    if raw is None:
-        return None
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        print("[firecrawl] invalid JSON response", file=sys.stderr)
-        return None
-
-    if not data.get("success"):
-        return None
-
-    scraped = data.get("data") or {}
-    markdown = scraped.get("markdown") or ""
-    html = scraped.get("html") or ""
-    metadata = scraped.get("metadata") or {}
-    title = metadata.get("title") or ""
-    final_url = metadata.get("sourceURL") or url
-    content = normalize_text(markdown or strip_html(html), max_length)
-
-    if len(content) < 200:
-        return None
-
-    discovered_urls = extract_discovered_urls(final_url, html)
-    return result_payload(url, title, content, "firecrawl", final_url, discovered_urls)
-
-
 def extract_content_from_scrapling(page, max_length: int) -> tuple[str, str, list[str]]:
     selectors = [
         "article",
@@ -286,7 +233,7 @@ def try_scrapling(url: str, max_length: int) -> dict | None:
             except Exception as exc:
                 print(f"[scrapling] stealth fallback failed: {exc}", file=sys.stderr)
 
-        if len(content) < 200:
+        if len(content) < MIN_CONTENT_LENGTH:
             return None
 
         return result_payload(url, title, content, "scrapling", getattr(page, "url", url), discovered_urls)
@@ -312,7 +259,7 @@ def try_goose(url: str, max_length: int) -> dict | None:
             article.meta_lang or "",
         ]
         content = normalize_text(choose_best_text(candidates), max_length)
-        if len(content) < 200:
+        if len(content) < MIN_CONTENT_LENGTH:
             return None
         return result_payload(url, title, content, "goose3", getattr(article, "final_url", url) or url, [])
     except Exception as exc:
@@ -328,13 +275,25 @@ def try_goose(url: str, max_length: int) -> dict | None:
 
 async def try_crawl4ai_async(url: str, max_length: int) -> dict | None:
     try:
-        from crawl4ai import AsyncWebCrawler
+        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
     except Exception:
         return None
 
     try:
-        async with AsyncWebCrawler() as crawler:
-            result = await crawler.arun(url=url)
+        browser_config = BrowserConfig(
+            headless=True,
+            verbose=False,
+        )
+        run_config = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,
+            page_timeout=REQUEST_TIMEOUT_SECONDS * 1000,
+            word_count_threshold=120,
+            remove_overlay_elements=True,
+            process_iframes=False,
+            exclude_external_links=False,
+        )
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            result = await crawler.arun(url=url, config=run_config)
     except Exception as exc:
         print(f"[crawl4ai] failed: {exc}", file=sys.stderr)
         return None
@@ -356,13 +315,13 @@ async def try_crawl4ai_async(url: str, max_length: int) -> dict | None:
                 markdown,
                 getattr(result, "markdown", "") or "",
                 strip_html(getattr(result, "html", "") or ""),
-                getattr(result, "cleaned_html", "") or "",
+                strip_html(getattr(result, "cleaned_html", "") or ""),
             ]
         ),
         max_length,
     )
 
-    if len(content) < 200:
+    if len(content) < MIN_CONTENT_LENGTH or looks_like_raw_html(content):
         return None
 
     final_url = getattr(result, "url", "") or url
@@ -392,6 +351,53 @@ def try_crawl4ai(url: str, max_length: int) -> dict | None:
         return None
 
 
+def try_jina_reader(url: str, max_length: int) -> dict | None:
+    target_url = url.strip()
+    if target_url.startswith("https://"):
+        target_url = "http://" + target_url[len("https://"):]
+    elif not target_url.startswith("http://"):
+        target_url = f"http://{target_url}"
+    jina_url = f"{JINA_READER_BASE_URL}{target_url}"
+    req = urllib.request.Request(
+        jina_url,
+        headers={
+            "Accept": "text/plain, text/markdown;q=0.9, text/html;q=0.7",
+            "User-Agent": USER_AGENT,
+            "X-Return-Format": "markdown",
+            "X-Timeout": str(REQUEST_TIMEOUT_SECONDS),
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8", "ignore")
+    except urllib.error.HTTPError as exc:
+        print(f"[jina] HTTP {exc.code}", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"[jina] failed: {exc}", file=sys.stderr)
+        return None
+
+    if not raw.strip():
+        return None
+
+    title = ""
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    for line in lines[:5]:
+        if line.startswith("#"):
+            title = re.sub(r"^#+\s*", "", line).strip()
+            break
+    if not title and lines:
+        title = lines[0][:180]
+
+    content = normalize_text(raw, max_length)
+    if len(content) < MIN_CONTENT_LENGTH:
+        return None
+
+    return result_payload(url, title, content, "jina-reader", url, [])
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"success": False, "error": "Usage: fetch_page.py <url> [max_length]"}))
@@ -401,7 +407,7 @@ def main():
     max_length = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
 
     try:
-        extractors = [try_firecrawl, try_scrapling, try_goose, try_crawl4ai]
+        extractors = [try_crawl4ai, try_jina_reader, try_scrapling, try_goose]
 
         for extractor in extractors:
             result = extractor(url, max_length)

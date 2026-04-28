@@ -11,7 +11,7 @@ export const sourceOps = {
    */
   async create(source: Omit<Source, 'id'>): Promise<number> {
     const result = query.run(
-      `INSERT INTO sources (artist_id, url, institution, credibility_score, content_summary)
+      `INSERT OR IGNORE INTO sources (artist_id, url, institution, credibility_score, content_summary)
        VALUES (?, ?, ?, ?, ?)`,
       [
         source.artist_id,
@@ -22,7 +22,15 @@ export const sourceOps = {
       ]
     );
 
-    return Number(result.lastInsertRowid);
+    if (result.lastInsertRowid) {
+      return Number(result.lastInsertRowid);
+    }
+
+    const existing = query.get<{ id: number }>(
+      `SELECT id FROM sources WHERE artist_id = ? AND url = ?`,
+      [source.artist_id, source.url]
+    );
+    return Number(existing?.id ?? 0);
   },
 
   /**
