@@ -1,8 +1,6 @@
 name: Daily Archive Dispatch
 
 on:
-  schedule:
-    - cron: '0 9 * * *'
   workflow_dispatch:
 
 jobs:
