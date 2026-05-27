@@ -5,7 +5,10 @@
       "src": "api/**/*.ts",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["config/**/*.json", "config/**/*.html"]
+        "includeFiles": [
+          "config/**/*.json",
+          "config/**/*.html"
+        ]
       }
     }
   ],
@@ -22,5 +25,8 @@
       "src": "/api/webhook/reject",
       "dest": "/api/webhook/reject.ts"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": false
+  }
 }
