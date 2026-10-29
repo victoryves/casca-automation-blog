@@ -1,0 +1,10 @@
+{
+  "humanizer": {
+    "repository": "https://github.com/blader/humanizer",
+    "version": "3.1.0",
+    "retrieved_date": "2026-10-29",
+    "skill_sha256": "0612f1dfb1672b0ea9b97e139bf1f06cabe98d8b27424fe8ff01e1fb4cc99cad",
+    "license": "MIT",
+    "runtime_policy": "Reviewed CASCA adaptations in src/utils/editorial-style.ts; no remote prompt loading."
+  }
+}

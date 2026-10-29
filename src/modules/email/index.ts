@@ -5,6 +5,7 @@
  */
 
 import { Resend } from 'resend';
+import { assertEditorialCopy } from '../../utils/editorial-style.js';
 import { htmlToText } from 'html-to-text';
 import { marked } from 'marked';
 import { draftOps, artistOps, publishingOps, sourceOps, workerHeartbeatOps } from '../../db/operations/index.js';
@@ -423,6 +424,7 @@ export class EmailModule {
   }
 
   private assertDraftEditorialInvariant(title: string, content: string, artistName: string): void {
+    assertEditorialCopy(content);
     const normalizedTitle = this.normalizeArtistName(title);
     const normalizedArtist = this.normalizeArtistName(artistName);
     const surname = normalizedArtist.split(/\s+/).filter(Boolean).pop();

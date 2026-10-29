@@ -1,0 +1,8 @@
+extends: existence
+message: "State the point directly instead of '%s'."
+level: warning
+ignorecase: true
+tokens:
+  - "let('s| us) (delve|dive|explore)"
+  - 'it is (important|worth) (to note|noting)'
+  - 'at its core'

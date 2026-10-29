@@ -1,0 +1,13 @@
+extends: existence
+message: "Replace '%s' with a specific supported observation; preserve quotations and titles."
+level: warning
+ignorecase: true
+tokens:
+  - 'rich tapestry'
+  - 'testament to'
+  - 'indelible mark'
+  - 'ever-evolving landscape'
+  - 'visionary genius'
+  - 'timeless legacy'
+  - 'profound impact'
+  - 'vibrant tapestry'

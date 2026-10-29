@@ -46,3 +46,6 @@ scrapers/.venv/
 # Vercel
 .vercel
 .env*.local
+
+# Locally installed, checksum-verified editorial linter
+vendor/vale/vale

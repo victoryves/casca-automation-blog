@@ -5,6 +5,8 @@
  */
 
 import { marked } from 'marked';
+import { CASCA_EDITORIAL_VOICE } from '../../utils/editorial-style.js';
+import { ArticleHumanizer } from './humanizer.js';
 import { artistOps, sourceOps, draftOps } from '../../db/operations/index.js';
 import { getConfig } from '../../config/index.js';
 import { GeminiClient } from '../../lib/gemini.js';
@@ -90,6 +92,17 @@ export class SynthesisModule {
 
     // Generate article
     const article = await this.generateArticle(artist, sources);
+    const reviewContext = this.filterEditorialSources(sources)
+      .map(source => `${source.institution}: ${source.url}\n${this.extractRelevantSourceExcerpt(source, artist) ?? ''}`)
+      .join('\n\n');
+    const reviewed = await new ArticleHumanizer().humanizeArticle(artist.full_name, article.content, reviewContext);
+    article.content = reviewed.content;
+    await artistOps.mergeMetadata(artistId, {
+      humanizer_provider: reviewed.provider,
+      humanizer_changed: reviewed.changed,
+      humanizer_review: reviewed.review,
+      humanizer_completed_at: new Date().toISOString(),
+    });
     console.log(`  ✓ Article generated (${article.content.split(/\s+/).length} words)`);
 
     // Create draft
@@ -226,7 +239,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
     try {
       const content = await this.client.generateText({
         model: 'gemini-2.5-flash',
-        systemInstruction: prompt.system,
+        systemInstruction: `${prompt.system}\n\n${CASCA_EDITORIAL_VOICE}`,
         userPrompt,
         maxOutputTokens: 4096,
         temperature: 0.7,
@@ -242,7 +255,7 @@ Visual Practice: ${artist.visual_practice ?? 'Not specified'}
 
         const expanded = await this.client.generateText({
           model: 'gemini-2.5-flash',
-          systemInstruction: `${prompt.system}\n\nIMPORTANT: Your response MUST stay between 450 and 700 words and the body MUST use no more than 4 paragraphs.`,
+          systemInstruction: `${prompt.system}\n\n${CASCA_EDITORIAL_VOICE}\n\nIMPORTANT: Your response MUST stay between 450 and 700 words and the body MUST use no more than 4 paragraphs.`,
           userPrompt: `${userPrompt}\n\nYour previous response was too short. Rewrite the full article in the required format, keep it between 450 and 700 words, and use no more than 4 body paragraphs.`,
           maxOutputTokens: 4096,
           temperature: 0.7,

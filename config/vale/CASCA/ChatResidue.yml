@@ -1,0 +1,10 @@
+extends: existence
+message: "Remove drafting or chatbot text: '%s'."
+level: error
+ignorecase: true
+tokens:
+  - 'as an ai( language model)?'
+  - 'i hope this helps'
+  - 'here is (the|your) (rewritten |revised )?article'
+  - 'would you like me to'
+  - 'let me know if you'

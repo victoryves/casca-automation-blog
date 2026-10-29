@@ -1,0 +1,105 @@
+--- a/src/modules/agents/drafter.ts
++++ b/src/modules/agents/drafter.ts
+@@ -5,7 +5,8 @@
+ import { artistOps, draftOps } from '../../db/operations/index.js';
+ import { getConfig } from '../../config/index.js';
+ import { EditorialAIClient } from '../../lib/editorial-ai.js';
+-import { ArticleHumanizer } from '../synthesis/humanizer.js';
++import { ArticleHumanizer, type HumanizeArticleResult } from '../synthesis/humanizer.js';
++import { CASCA_EDITORIAL_VOICE, assertEditorialCopy } from '../../utils/editorial-style.js';
+ import type { Draft } from '../../types/index.js';
+ import { BaseAgent, type AgentTickResult } from './base.js';
+ import { askTheDoctor, type HealerDiagnosis } from './healer.js';
+@@ -160,12 +161,14 @@
+           let finalValidation = lastValidation;
+           let humanizerProvider = 'none';
+           let humanizerChanged = false;
++          let humanizerReview: HumanizeArticleResult['review'] | null = null;
+           let humanizerFallbackReason: string | null = null;
+ 
+           try {
+             const humanized = await this.humanizer.humanizeArticle(
+               artist.full_name,
+-              lastValidation.content
++              lastValidation.content,
++              dossier
+             );
+             const humanizedValidation = this.validateArticle(artist.full_name, humanized.content);
+             if (humanizedValidation.ok && humanizedValidation.content) {
+@@ -173,6 +176,7 @@
+               finalValidation = humanizedValidation;
+               humanizerProvider = humanized.provider;
+               humanizerChanged = humanized.changed;
++              humanizerReview = humanized.review;
+             } else {
+               humanizerFallbackReason = `post-validation:${humanizedValidation.reason ?? 'unknown'}`;
+             }
+@@ -181,17 +185,17 @@
+           }
+ 
+           if (humanizerFallbackReason) {
+-            console.warn(
+-              `[DRAFTER] Humanizer falhou para ${artist.full_name}; usando texto validado original. Motivo: ${humanizerFallbackReason}`
+-            );
++            throw new Error(`editorial-review-failed:${humanizerFallbackReason}`);
+           }
+ 
++          assertEditorialCopy(finalContent);
+           await artistOps.mergeMetadata(artist.id, {
+             research_dossier_snapshot: dossier.slice(0, 8000),
+             drafter_completed_at: new Date().toISOString(),
+             drafter_word_count: finalValidation.wordCount,
+             humanizer_provider: humanizerProvider,
+             humanizer_changed: humanizerChanged,
++            humanizer_review: humanizerReview,
+             humanizer_completed_at: new Date().toISOString(),
+             humanizer_fallback_reason: humanizerFallbackReason,
+           });
+@@ -312,9 +316,10 @@
+   ): Promise<ArticleGenerationResult> {
+     const systemInstruction = [
+       'You are the CASCA Archive editorial drafter.',
+-      'Act as an academic art historian writing deeply analytical, verbose, source-grounded English prose about visual artists from Northeast Brazil.',
++      'Write precise, source-grounded editorial English about visual artists from Northeast Brazil. Avoid padding and invented context.',
+       'Never include scraped UI text, login prompts, marketplace language, navigation labels, or unsupported claims.',
+       'Write in plain English. Do not return JSON. Do not use Markdown.',
++      CASCA_EDITORIAL_VOICE,
+     ].join(' ');
+ 
+     const userPrompt =
+@@ -351,18 +356,18 @@
+       `Artist name: ${artistName}`,
+       `Drafting attempt: ${attempt} of ${MAX_GENERATION_ATTEMPTS}`,
+       '',
+-      'Act as an academic art historian writing a deeply analytical, verbose, and comprehensive long-form article. DO NOT summarize the dossier. You must EXPAND on the details provided.',
+-      'CRITICAL INSTRUCTION: Write a comprehensive, highly detailed biography in EXACTLY 4 paragraphs. Do not use Markdown, headers, title labels, JSON, or bullet points. Separate paragraphs with double newlines (\\n\\n). You must generate a very long text, around 600 words total. To ensure length and structure, dedicate each paragraph to one specific theme:',
+-      'CRITICAL RULE: Write EXACTLY 4 paragraphs. Each individual paragraph MUST contain at least 130 words. Expand heavily on descriptions, historical context, and artistic techniques to guarantee the length. Separate paragraphs with exactly two newlines (\\n\\n).',
+-      'Paragraph 1: Early life, origins in the Northeast of Brazil, and historical context. Expand on details.',
+-      'Paragraph 2: Signature artistic style, primary techniques (for example woodcut, illustration, typography, painting, engraving, graphic design, or other techniques supported by the dossier), and visual elements. Expand on details.',
+-      'Paragraph 3: Specific notable artworks, exhibitions, publications, commissions, and their cultural impact on the vernacular design scene. Provide extensive context.',
+-      'Paragraph 4: Legacy, lasting influence, and conclusion.',
++      'Write an editorial account grounded in this dossier. Develop concrete documented details and distinguish interpretation from fact.',
++      'CRITICAL INSTRUCTION: Write a precise editorial article in EXACTLY 4 paragraphs. Do not use Markdown, headers, title labels, JSON, or bullet points. Separate paragraphs with double newlines (\\n\\n). Target about 550 words using documented details. Use this outline only when it fits the dossier; prefer a work-led opening where the sources support it:',
++      'Use 4 paragraphs and 450–700 words overall. Let the evidence determine their relative lengths; do not impose a minimum per paragraph or add filler.',
++      'Paragraph 1: Early life, origins in the Northeast of Brazil, and historical context. Use only documented details.',
++      'Paragraph 2: Signature artistic style, primary techniques (for example woodcut, illustration, typography, painting, engraving, graphic design, or other techniques supported by the dossier), and visual elements. Use only documented details.',
++      'Paragraph 3: Specific notable artworks, exhibitions, publications, commissions, and their cultural impact on the vernacular design scene. Include only source-supported context.',
++      'Paragraph 4: Develop a final documented observation about the work. Discuss influence only if a source substantiates it; avoid a generic legacy conclusion.',
+       '',
+       'Additional constraints:',
+       `- Do not print the title. The title is handled separately and will be exactly "${artistName}".`,
+       `- The article body must still satisfy ${MIN_WORDS}-${MAX_WORDS} words after validation.`,
+-      '- If the dossier is thin, expand through careful interpretation of documented technique, context, and legacy rather than inventing unsupported facts.',
++      '- If the dossier is too thin for 450 words, do not invent facts, anecdotes, or influence to reach the target. The draft must return to research.',
+       retryFeedback ? `\nRETRY FEEDBACK:\n${retryFeedback}` : '',
+     ].join('\n');
+   }
+@@ -375,7 +380,7 @@
+     if (validation.reason.startsWith('word-count')) {
+       const wordCount = validation.wordCount ?? 'unknown';
+       if (typeof wordCount === 'number' && wordCount < MIN_WORDS) {
+-        return `Your previous response failed because it was too short (${wordCount} words). The text MUST be at least ${MIN_WORDS} words. Rewrite it as a fuller, more detailed biography, expanding heavily on the descriptions of techniques, visual language, artworks, exhibitions, and cultural impact in paragraphs 2 and 3.`;
++        return `Your previous response failed because it was too short (${wordCount} words). The text MUST be at least ${MIN_WORDS} words. Rewrite it as a fuller, more detailed biography, developing only documented details of techniques, works and exhibitions. Do not pad or invent significance to reach the minimum.`;
+       }
+       return `Your previous response failed because the word count was ${wordCount}. The final body MUST stay between ${MIN_WORDS} and ${MAX_WORDS} words. Rewrite it with better proportional detail.`;
+     }

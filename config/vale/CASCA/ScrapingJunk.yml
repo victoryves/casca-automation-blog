@@ -1,0 +1,12 @@
+extends: existence
+message: "Remove scraped UI text: '%s'."
+level: error
+ignorecase: true
+tokens:
+  - 'skip to (main )?content'
+  - 'get the app'
+  - 'log in'
+  - 'sign up'
+  - 'add to cart'
+  - 'accept all cookies'
+  - 'join us'
